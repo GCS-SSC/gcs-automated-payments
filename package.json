@@ -1,0 +1,15 @@
+{
+  "name": "@gcs-ssc/gcs-automated-payments",
+  "private": true,
+  "type": "module",
+  "description": "GCS-SSC extension for automated agreement payment amount ceilings.",
+  "peerDependencies": {
+    "@nuxt/ui": "*",
+    "nuxt": "*",
+    "tailwindcss": "*",
+    "vue": "*"
+  },
+  "dependencies": {
+    "@gcs-ssc/extensions": "github:GCS-SSC/gcs-ssc-extensions#main"
+  }
+}

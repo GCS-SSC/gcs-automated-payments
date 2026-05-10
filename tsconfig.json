@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "types": ["./env.d.ts"]
+  },
+  "include": [
+    "components/**/*.vue",
+    "server/**/*.ts",
+    "shared/**/*.ts",
+    "extension.config.ts"
+  ]
+}
