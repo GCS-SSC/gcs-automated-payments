@@ -1,4 +1,5 @@
 /* eslint-disable jsdoc/require-jsdoc */
+import { readValidatedBodyI18n } from '~~/server/utils/api-validate'
 import { AutomatedPaymentCalculateSchema } from '../../shared/automated-payments'
 import { calculateAutomatedPaymentFromDb } from '../calculation-data'
 
@@ -8,7 +9,7 @@ export default async (event: Parameters<EventHandler>[0]) => {
     throw new Error('Agreement id is required.')
   }
 
-  const body = await readValidatedBody(event, AutomatedPaymentCalculateSchema)
+  const body = await readValidatedBodyI18n(event, AutomatedPaymentCalculateSchema)
   const extensionConfig = event.context.gcsExtension && typeof event.context.gcsExtension === 'object'
     ? (event.context.gcsExtension as { config?: unknown }).config
     : {}

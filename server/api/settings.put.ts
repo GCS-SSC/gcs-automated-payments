@@ -1,4 +1,5 @@
 /* eslint-disable jsdoc/require-jsdoc */
+import { readValidatedBodyI18n } from '~~/server/utils/api-validate'
 import {
   AutomatedPaymentsAgreementSettingsSchema,
   parseAutomatedPaymentsAgreementSettings
@@ -11,7 +12,7 @@ export default async (event: Parameters<EventHandler>[0]) => {
     throw new Error('Agreement id is required.')
   }
 
-  const body = await readValidatedBody(event, AutomatedPaymentsAgreementSettingsSchema)
+  const body = await readValidatedBodyI18n(event, AutomatedPaymentsAgreementSettingsSchema)
   const settings = parseAutomatedPaymentsAgreementSettings(body)
   await saveAgreementSettings(
     event.context.$db as Parameters<typeof saveAgreementSettings>[0],
