@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   calculateAutomatedPaymentAmount,
-  defaultAutomatedPaymentsHoldbackSettings,
   roundCurrency
 } from '../../shared/automated-payments'
+
+const hostHoldbackSettings = {
+  holdbackPercent: 10,
+  holdbackBasis: 'agreement-total' as const
+}
 
 describe('gcs automated payments calculation', () => {
   it('calculates reimbursement ceiling from claims minus payments', () => {
@@ -17,7 +21,7 @@ describe('gcs automated payments calculation', () => {
       commitmentRemaining: 1000,
       agreementTotal: 2000,
       finalFiscalYearTotal: 2000
-    }, defaultAutomatedPaymentsHoldbackSettings)
+    }, hostHoldbackSettings)
 
     expect(result.baseAmount).toBe(750)
     expect(result.ceilingAmount).toBe(750)
@@ -34,7 +38,7 @@ describe('gcs automated payments calculation', () => {
       commitmentRemaining: 1000,
       agreementTotal: 2000,
       finalFiscalYearTotal: 2000
-    }, defaultAutomatedPaymentsHoldbackSettings)
+    }, hostHoldbackSettings)
 
     expect(result.baseAmount).toBe(1000)
     expect(result.ceilingAmount).toBe(1000)
@@ -51,7 +55,7 @@ describe('gcs automated payments calculation', () => {
       commitmentRemaining: 225,
       agreementTotal: 2000,
       finalFiscalYearTotal: 2000
-    }, defaultAutomatedPaymentsHoldbackSettings)
+    }, hostHoldbackSettings)
 
     expect(result.ceilingAmount).toBe(225)
   })
@@ -87,7 +91,7 @@ describe('gcs automated payments calculation', () => {
       commitmentRemaining: 1000,
       agreementTotal: 1000,
       finalFiscalYearTotal: 1000
-    }, defaultAutomatedPaymentsHoldbackSettings)
+    }, hostHoldbackSettings)
 
     expect(result.ceilingAmount).toBe(33.33)
   })

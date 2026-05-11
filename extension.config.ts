@@ -16,12 +16,6 @@ export default defineGcsExtension({
     }
   },
   client: {
-    slots: [
-      {
-        slot: 'agreement.profile.sections.after',
-        path: './components/AgreementPaymentsProfileSection.vue'
-      }
-    ],
     tabs: [
       {
         target: 'agreement',

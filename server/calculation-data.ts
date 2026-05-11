@@ -29,6 +29,29 @@ const SETTINGS_KEY = 'agreement-settings'
 const TERMINAL_CLAIM_RECONCILE_STATUSES = ['complete', 'approved'] as const
 const NON_DENIED_PAYMENT_STATUSES = ['draft', 'inprogress', 'complete', 'pendingapproval', 'approved', 'pay', 'wait', 'processed', 'paid'] as const
 
+const getAgreementHoldbackSettings = async (
+  db: Db,
+  agreementId: string
+) => {
+  const row = await db
+    .selectFrom('Funding_Case_Agreement_Profile')
+    .select([
+      'egcs_fc_holdback',
+      'egcs_fc_holdbackbasis'
+    ])
+    .where('id', '=', agreementId)
+    .where('_deleted', '=', false)
+    .executeTakeFirst() as {
+      egcs_fc_holdback?: unknown
+      egcs_fc_holdbackbasis?: unknown
+    } | undefined
+
+  return {
+    holdbackPercent: Number(row?.egcs_fc_holdback ?? 0),
+    holdbackBasis: row?.egcs_fc_holdbackbasis === 'final-fiscal-year' ? 'final-fiscal-year' : 'agreement-total'
+  }
+}
+
 export const getAgreementSettings = async (
   db: Db,
   agreementId: string
@@ -254,14 +277,16 @@ export const calculateAutomatedPaymentFromDb = async (
     paymentsToDate,
     commitmentRemaining,
     agreementTotal,
-    fiscalYearTotal
+    fiscalYearTotal,
+    holdbackSettings
   ] = await Promise.all([
     getClaimTotal(db, input.agreementId, input.fiscalYearId, input.periodEnd),
     getForecastTotal(db, input.agreementId, input.fiscalYearId, input.periodEnd),
     getPaymentsToDate(db, input.agreementId, input.fiscalYearId),
     getCommitmentRemaining(db, input.agreementId, input.fiscalYearId, input.commitmentType),
     getAgreementTotal(db, input.agreementId),
-    getFiscalYearTotal(db, input.fiscalYearId)
+    getFiscalYearTotal(db, input.fiscalYearId),
+    getAgreementHoldbackSettings(db, input.agreementId)
   ])
 
   const result = calculateAutomatedPaymentAmount({
@@ -275,10 +300,7 @@ export const calculateAutomatedPaymentFromDb = async (
     agreementTotal,
     finalFiscalYearTotal: fiscalYearTotal,
     holdbackReleaseOverride: input.holdbackReleaseOverride ?? settings.holdbackReleaseOverride
-  }, {
-    holdbackPercent: settings.holdbackPercent,
-    holdbackBasis: settings.holdbackBasis
-  })
+  }, holdbackSettings)
 
   return {
     enabled: true,

@@ -9,20 +9,18 @@ export type AutomatedPaymentType = (typeof automatedPaymentTypes)[number]
 export const holdbackBasisValues = ['agreement-total', 'final-fiscal-year'] as const
 export type HoldbackBasis = (typeof holdbackBasisValues)[number]
 
-export interface AutomatedPaymentsStreamConfig {
-  enabledPaymentTypes: AutomatedPaymentType[]
-}
-
 export interface AutomatedPaymentsHoldbackSettings {
   holdbackPercent: number
   holdbackBasis: HoldbackBasis
 }
 
+export interface AutomatedPaymentsStreamConfig {
+  enabledPaymentTypes: AutomatedPaymentType[]
+}
+
 export interface AutomatedPaymentsAgreementSettings {
   previousClaimsTotal: number
   previousPaymentsTotal: number
-  holdbackPercent: number
-  holdbackBasis: HoldbackBasis
   holdbackReleaseOverride: number | null
 }
 
@@ -51,24 +49,15 @@ export const defaultAutomatedPaymentsStreamConfig: AutomatedPaymentsStreamConfig
   enabledPaymentTypes: ['reimbursement', 'advance']
 }
 
-export const defaultAutomatedPaymentsHoldbackSettings: AutomatedPaymentsHoldbackSettings = {
-  holdbackPercent: 10,
-  holdbackBasis: 'agreement-total'
-}
-
 export const defaultAutomatedPaymentsAgreementSettings: AutomatedPaymentsAgreementSettings = {
   previousClaimsTotal: 0,
   previousPaymentsTotal: 0,
-  holdbackPercent: defaultAutomatedPaymentsHoldbackSettings.holdbackPercent,
-  holdbackBasis: defaultAutomatedPaymentsHoldbackSettings.holdbackBasis,
   holdbackReleaseOverride: null
 }
 
 export const AutomatedPaymentsAgreementSettingsSchema = z.object({
   previousClaimsTotal: z.coerce.number().finite().nonnegative().default(0),
   previousPaymentsTotal: z.coerce.number().finite().nonnegative().default(0),
-  holdbackPercent: z.coerce.number().finite().min(0).max(100).default(defaultAutomatedPaymentsHoldbackSettings.holdbackPercent),
-  holdbackBasis: z.enum(holdbackBasisValues).default(defaultAutomatedPaymentsHoldbackSettings.holdbackBasis),
   holdbackReleaseOverride: z.preprocess(
     value => value === '' || value === undefined ? null : value,
     z.coerce.number().finite().nonnegative().nullable().default(null)
