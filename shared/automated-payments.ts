@@ -18,10 +18,9 @@ export interface AutomatedPaymentsStreamConfig {
   enabledPaymentTypes: AutomatedPaymentType[]
 }
 
-export interface AutomatedPaymentsAgreementSettings {
-  previousClaimsTotal: number
-  previousPaymentsTotal: number
-  holdbackReleaseOverride: number | null
+export interface AutomatedPaymentExtensionPayload {
+  releaseHoldback: boolean
+  holdbackReleaseAmount: number
 }
 
 export interface AutomatedPaymentCalculationInput {
@@ -34,13 +33,19 @@ export interface AutomatedPaymentCalculationInput {
   commitmentRemaining: number
   agreementTotal: number
   finalFiscalYearTotal: number
-  holdbackReleaseOverride?: number | null
+  availableForDisbursementBeforeHoldback: number
+  holdbackAlreadyReleased: number
+  releaseHoldback?: boolean
+  holdbackReleaseAmount?: number
 }
 
 export interface AutomatedPaymentCalculationResult {
   baseAmount: number
   ceilingAmount: number
   suggestedAmount: number
+  holdbackAmount: number
+  holdbackReleaseAmount: number
+  availableBeforeHoldback: number
   currency: 'CAD'
   details: Array<{ label: string, value: number }>
 }
@@ -49,20 +54,21 @@ export const defaultAutomatedPaymentsStreamConfig: AutomatedPaymentsStreamConfig
   enabledPaymentTypes: ['reimbursement', 'advance']
 }
 
-export const defaultAutomatedPaymentsAgreementSettings: AutomatedPaymentsAgreementSettings = {
-  previousClaimsTotal: 0,
-  previousPaymentsTotal: 0,
-  holdbackReleaseOverride: null
+export const defaultAutomatedPaymentExtensionPayload: AutomatedPaymentExtensionPayload = {
+  releaseHoldback: false,
+  holdbackReleaseAmount: 0
 }
 
-export const AutomatedPaymentsAgreementSettingsSchema = z.object({
-  previousClaimsTotal: z.coerce.number().finite().nonnegative().default(0),
-  previousPaymentsTotal: z.coerce.number().finite().nonnegative().default(0),
-  holdbackReleaseOverride: z.preprocess(
-    value => value === '' || value === undefined ? null : value,
-    z.coerce.number().finite().nonnegative().nullable().default(null)
+export const AutomatedPaymentExtensionPayloadSchema = z.object({
+  releaseHoldback: z.boolean().default(false),
+  holdbackReleaseAmount: z.preprocess(
+    value => value === '' || value === undefined || value === null ? 0 : value,
+    z.coerce.number().finite().nonnegative().default(0)
   )
-})
+}).transform(data => ({
+  releaseHoldback: data.releaseHoldback,
+  holdbackReleaseAmount: data.releaseHoldback ? data.holdbackReleaseAmount : 0
+}))
 
 export const AutomatedPaymentCalculateSchema = z.object({
   egcs_fc_commitmenttype: z.string().min(1),
@@ -97,9 +103,9 @@ export const parseAutomatedPaymentsStreamConfig = (value: unknown): AutomatedPay
   }
 }
 
-export const parseAutomatedPaymentsAgreementSettings = (value: unknown): AutomatedPaymentsAgreementSettings => {
-  const parsed = AutomatedPaymentsAgreementSettingsSchema.safeParse(value)
-  return parsed.success ? parsed.data : defaultAutomatedPaymentsAgreementSettings
+export const parseAutomatedPaymentExtensionPayload = (value: unknown): AutomatedPaymentExtensionPayload => {
+  const parsed = AutomatedPaymentExtensionPayloadSchema.safeParse(value)
+  return parsed.success ? parsed.data : defaultAutomatedPaymentExtensionPayload
 }
 
 export const calculateAutomatedPaymentAmount = (
@@ -114,28 +120,36 @@ export const calculateAutomatedPaymentAmount = (
     ? input.finalFiscalYearTotal
     : input.agreementTotal
   const holdbackAmount = roundCurrency(holdbackBasisAmount * (holdbackSettings.holdbackPercent / 100))
-  const releaseOverride = input.holdbackReleaseOverride === null || input.holdbackReleaseOverride === undefined
-    ? 0
-    : roundCurrency(input.holdbackReleaseOverride)
-  const holdbackThreshold = roundCurrency(Math.max(holdbackBasisAmount - holdbackAmount + releaseOverride, 0))
-  const availableBeforeHoldback = roundCurrency(Math.max(holdbackThreshold - input.totalPaymentsToDate, 0))
+  const remainingHoldback = roundCurrency(Math.max(holdbackAmount - input.holdbackAlreadyReleased, 0))
+  const requestedHoldbackRelease = input.releaseHoldback === true
+    ? roundCurrency(input.holdbackReleaseAmount ?? 0)
+    : 0
+  const holdbackReleaseAmount = roundCurrency(Math.min(requestedHoldbackRelease, remainingHoldback))
+  const availableBeforeHoldback = roundCurrency(Math.max(input.availableForDisbursementBeforeHoldback, 0))
+  const availableWithHoldbackRelease = roundCurrency(availableBeforeHoldback + holdbackReleaseAmount)
   const positiveBaseAmount = roundCurrency(Math.max(baseAmount, 0))
   const ceilingAmount = roundCurrency(Math.max(lowerCurrency([
     positiveBaseAmount,
     input.commitmentRemaining,
-    availableBeforeHoldback
+    availableWithHoldbackRelease
   ]), 0))
 
   return {
     baseAmount: positiveBaseAmount,
     ceilingAmount,
     suggestedAmount: ceilingAmount,
+    holdbackAmount,
+    holdbackReleaseAmount,
+    availableBeforeHoldback,
     currency: 'CAD',
     details: [
       { label: 'baseAmount', value: positiveBaseAmount },
       { label: 'commitmentRemaining', value: roundCurrency(input.commitmentRemaining) },
       { label: 'availableBeforeHoldback', value: availableBeforeHoldback },
+      { label: 'holdbackReleaseAmount', value: holdbackReleaseAmount },
       { label: 'totalClaimsToLastClaimMonth', value: roundCurrency(input.totalClaimsToLastClaimMonth) },
+      { label: 'totalForecastToLastClaimMonth', value: roundCurrency(input.totalForecastToLastClaimMonth) },
+      { label: 'totalForecastToPeriodEnd', value: roundCurrency(input.totalForecastToPeriodEnd) },
       { label: 'totalPaymentsToDate', value: roundCurrency(input.totalPaymentsToDate) }
     ]
   }

@@ -32,7 +32,8 @@ const { n, t } = useI18n()
 const calculation: Ref<(AutomatedPaymentCalculationResult & { enabled?: boolean }) | null> = ref(null)
 const errorMessage: Ref<string | null> = ref(null)
 const isLoading: Ref<boolean> = ref(false)
-const holdbackReleaseOverride: Ref<string> = ref('')
+const releaseHoldback: Ref<boolean> = ref(false)
+const holdbackReleaseAmount: Ref<string> = ref('')
 
 const endpoint = computed(() => `/api/extensions/${extensionKey}/agreements/${context.agreementId}/calculate-payment`)
 
@@ -50,7 +51,8 @@ const requestBody = computed(() => ({
   egcs_fc_paymentamount: model.amount,
   extensions: {
     [EXTENSION_KEY]: {
-      holdbackReleaseOverride: holdbackReleaseOverride.value === '' ? null : Number(holdbackReleaseOverride.value)
+      releaseHoldback: releaseHoldback.value,
+      holdbackReleaseAmount: holdbackReleaseAmount.value === '' ? 0 : Number(holdbackReleaseAmount.value)
     }
   }
 }))
@@ -78,7 +80,8 @@ const publishResult = () => {
 
 const calculate = async () => {
   emit('extensionPayload', {
-    holdbackReleaseOverride: holdbackReleaseOverride.value === '' ? null : Number(holdbackReleaseOverride.value)
+    releaseHoldback: releaseHoldback.value,
+    holdbackReleaseAmount: holdbackReleaseAmount.value === '' ? 0 : Number(holdbackReleaseAmount.value)
   })
 
   if (!hasRequiredInputs.value) {
@@ -127,13 +130,23 @@ watch(requestBody, calculate, { deep: true, immediate: true })
       </UBadge>
     </div>
 
-    <UFormField label="Holdback release override">
-      <UInput
-        v-model="holdbackReleaseOverride"
-        type="number"
-        min="0"
-        step="0.01" />
-    </UFormField>
+    <div class="grid gap-3 sm:grid-cols-2">
+      <UFormField :label="t('extensions.gcs_automated_payments.release_holdback')">
+        <UCheckbox
+          v-model="releaseHoldback"
+          :label="t('extensions.gcs_automated_payments.release_holdback_label')" />
+      </UFormField>
+
+      <UFormField
+        v-if="releaseHoldback"
+        :label="t('extensions.gcs_automated_payments.holdback_release_amount')">
+        <UInput
+          v-model="holdbackReleaseAmount"
+          type="number"
+          min="0"
+          step="0.01" />
+      </UFormField>
+    </div>
 
     <div v-if="isLoading" class="flex items-center gap-2 text-sm text-muted">
       <UIcon name="i-lucide-loader-circle" class="animate-spin" />

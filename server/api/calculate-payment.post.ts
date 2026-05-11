@@ -1,6 +1,10 @@
 /* eslint-disable jsdoc/require-jsdoc */
 import { readValidatedBodyI18n } from '~~/server/utils/api-validate'
-import { AutomatedPaymentCalculateSchema } from '../../shared/automated-payments'
+import {
+  AutomatedPaymentCalculateSchema,
+  EXTENSION_KEY,
+  parseAutomatedPaymentExtensionPayload
+} from '../../shared/automated-payments'
 import { calculateAutomatedPaymentFromDb } from '../calculation-data'
 
 export default async (event: Parameters<EventHandler>[0]) => {
@@ -13,12 +17,7 @@ export default async (event: Parameters<EventHandler>[0]) => {
   const extensionConfig = event.context.gcsExtension && typeof event.context.gcsExtension === 'object'
     ? (event.context.gcsExtension as { config?: unknown }).config
     : {}
-  const extensionPayload = body.extensions?.['gcs-automated-payments'] && typeof body.extensions['gcs-automated-payments'] === 'object'
-    ? body.extensions['gcs-automated-payments'] as Record<string, unknown>
-    : {}
-  const holdbackReleaseOverride = typeof extensionPayload.holdbackReleaseOverride === 'number'
-    ? extensionPayload.holdbackReleaseOverride
-    : null
+  const extensionPayload = parseAutomatedPaymentExtensionPayload(body.extensions?.[EXTENSION_KEY])
 
   return await calculateAutomatedPaymentFromDb(
     event.context.$db as Parameters<typeof calculateAutomatedPaymentFromDb>[0],
@@ -29,7 +28,8 @@ export default async (event: Parameters<EventHandler>[0]) => {
       paymentType: body.egcs_fc_paymenttype,
       periodEnd: body.egcs_fc_periodend,
       submittedAmount: body.egcs_fc_paymentamount,
-      holdbackReleaseOverride
+      releaseHoldback: extensionPayload.releaseHoldback,
+      holdbackReleaseAmount: extensionPayload.holdbackReleaseAmount
     },
     extensionConfig
   )

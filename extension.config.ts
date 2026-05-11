@@ -16,22 +16,6 @@ export default defineGcsExtension({
     }
   },
   client: {
-    tabs: [
-      {
-        target: 'agreement',
-        id: 'automated-payments',
-        label: {
-          en: 'Automated Payments',
-          fr: 'Paiements automatises'
-        },
-        icon: 'i-lucide-calculator',
-        path: './components/AgreementAutomatedPaymentsTab.vue',
-        rbac: {
-          subject: 'agreement',
-          action: 'update'
-        }
-      }
-    ],
     paymentAmountCalculators: [
       {
         operation: 'agreement.payments.create',
@@ -49,32 +33,6 @@ export default defineGcsExtension({
     ]
   },
   serverHandlers: [
-    {
-      route: '/agreements/[agreementId]/settings',
-      method: 'get',
-      path: './server/api/settings.get.ts',
-      rbac: {
-        subject: 'agreement',
-        action: 'read',
-        entity: {
-          target: 'agreement',
-          param: 'agreementId'
-        }
-      }
-    },
-    {
-      route: '/agreements/[agreementId]/settings',
-      method: 'put',
-      path: './server/api/settings.put.ts',
-      rbac: {
-        subject: 'agreement',
-        action: 'update',
-        entity: {
-          target: 'agreement',
-          param: 'agreementId'
-        }
-      }
-    },
     {
       route: '/agreements/[agreementId]/calculate-payment',
       method: 'post',
