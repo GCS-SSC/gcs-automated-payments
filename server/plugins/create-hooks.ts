@@ -76,10 +76,16 @@ export default defineNitroPlugin(nitroApp => {
     if (submittedAmount > calculation.ceilingAmount) {
       throw createGcsExtensionUserError({
         code: 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING',
-        message: 'apiErrors.extensions.gcs_automated_payments.amount_exceeds_ceiling',
+        message: {
+          en: 'The payment amount exceeds the automated payment ceiling.',
+          fr: 'Le montant du paiement depasse le plafond du paiement automatise.'
+        },
         details: [{
           path: 'egcs_fc_paymentamount',
-          message: 'apiErrors.extensions.gcs_automated_payments.amount_exceeds_ceiling'
+          message: {
+            en: 'The payment amount exceeds the automated payment ceiling.',
+            fr: 'Le montant du paiement depasse le plafond du paiement automatise.'
+          }
         }]
       })
     }
