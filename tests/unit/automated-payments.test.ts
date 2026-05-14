@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AutomatedPaymentCalculateSchema,
   calculateAutomatedPaymentAmount,
   parseAutomatedPaymentExtensionPayload,
   roundCurrency,
   type AutomatedPaymentCalculationInput
 } from '../../shared/automated-payments'
+import { createAutomatedPaymentValidationError } from '../../server/errors'
 
 const hostHoldbackSettings = {
   holdbackPercent: 10,
@@ -174,5 +176,49 @@ describe('gcs automated payments calculation', () => {
       releaseHoldback: false,
       holdbackReleaseAmount: 0
     })
+  })
+
+  it('uses an extension-owned validation code for invalid period ranges', () => {
+    const result = AutomatedPaymentCalculateSchema.safeParse({
+      egcs_fc_commitmenttype: 'commitment',
+      egcs_fc_fiscalyear: '1',
+      egcs_fc_paymenttype: 'advance',
+      egcs_fc_periodstart: 3,
+      egcs_fc_periodend: 2,
+      egcs_fc_paymentamount: 50
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.error?.issues[0]?.message).toBe('GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID')
+    expect(result.error?.issues[0]?.path).toEqual(['egcs_fc_periodend'])
+  })
+
+  it('converts calculator validation issues into bilingual extension-owned user errors', () => {
+    const result = AutomatedPaymentCalculateSchema.safeParse({
+      egcs_fc_commitmenttype: 'commitment',
+      egcs_fc_fiscalyear: '1',
+      egcs_fc_paymenttype: 'advance',
+      egcs_fc_periodstart: 3,
+      egcs_fc_periodend: 2,
+      egcs_fc_paymentamount: 50
+    })
+
+    expect(result.success).toBe(false)
+
+    const error = createAutomatedPaymentValidationError(result.error?.issues ?? [])
+
+    expect(error.code).toBe('GCS_AUTOMATED_PAYMENTS_INVALID_CALCULATION_INPUT')
+    expect(error.localizedMessage).toEqual({
+      en: 'Review the payment fields before calculating the automated payment.',
+      fr: 'Verifiez les champs du paiement avant de calculer le paiement automatise.'
+    })
+    expect(error.details).toEqual([{
+      path: 'egcs_fc_periodend',
+      code: 'GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID',
+      message: {
+        en: 'Period end must be the same as or after period start.',
+        fr: 'La periode de fin doit etre identique ou posterieure a la periode de debut.'
+      }
+    }])
   })
 })

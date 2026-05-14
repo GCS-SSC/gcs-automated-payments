@@ -79,7 +79,7 @@ export const AutomatedPaymentCalculateSchema = z.object({
   egcs_fc_paymentamount: z.coerce.number().finite().optional(),
   extensions: z.record(z.string(), z.json()).optional()
 }).refine(data => data.egcs_fc_periodstart <= data.egcs_fc_periodend, {
-  message: 'validation.date_range',
+  message: 'GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID',
   path: ['egcs_fc_periodend']
 })
 

@@ -37,10 +37,80 @@ const holdbackReleaseAmount: Ref<string> = ref('')
 
 const endpoint = computed(() => `/api/extensions/${extensionKey}/agreements/${context.agreementId}/calculate-payment`)
 
+const calculationDetailLabelKeys: Record<string, string> = {
+  baseAmount: 'extensions.gcs_automated_payments.details.base_amount',
+  commitmentRemaining: 'extensions.gcs_automated_payments.details.commitment_remaining',
+  availableBeforeHoldback: 'extensions.gcs_automated_payments.details.available_before_holdback',
+  holdbackReleaseAmount: 'extensions.gcs_automated_payments.details.holdback_release_amount',
+  totalClaimsToLastClaimMonth: 'extensions.gcs_automated_payments.details.total_claims_to_last_claim_month',
+  totalForecastToLastClaimMonth: 'extensions.gcs_automated_payments.details.total_forecast_to_last_claim_month',
+  totalForecastToPeriodEnd: 'extensions.gcs_automated_payments.details.total_forecast_to_period_end',
+  totalPaymentsToDate: 'extensions.gcs_automated_payments.details.total_payments_to_date'
+}
+
+const calculationDetailItems = computed(() => [{
+  label: t('extensions.gcs_automated_payments.calculation_details'),
+  value: 'details',
+  icon: 'i-lucide-list'
+}])
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+const firstString = (...values: unknown[]): string | null => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0) {
+      return value
+    }
+  }
+
+  return null
+}
+
+const resolveApiErrorMessage = (payload: unknown): string | null => {
+  if (!isRecord(payload)) {
+    return null
+  }
+
+  const data = isRecord(payload.data) ? payload.data : payload
+  const details = Array.isArray(data.details) ? data.details : []
+  for (const detail of details) {
+    if (isRecord(detail)) {
+      const detailMessage = firstString(detail.message)
+      if (detailMessage) {
+        return detailMessage
+      }
+    }
+  }
+
+  return firstString(data.message, payload.message, payload.statusMessage)
+}
+
+const readErrorMessage = async (response: Response): Promise<string> => {
+  try {
+    const payload = await response.json()
+    const apiMessage = resolveApiErrorMessage(payload)
+    if (apiMessage) {
+      return apiMessage
+    }
+  } catch {
+    // Fall through to localized fallback when the response is not JSON.
+  }
+
+  return response.statusText || t('extensions.gcs_automated_payments.calculation_error')
+}
+
 const formatMoney = (value: number) => n(value, {
   style: 'currency',
   currency: 'CAD'
 })
+
+const calculationDetails = computed(() =>
+  calculation.value?.details.map(detail => ({
+    label: t(calculationDetailLabelKeys[detail.label] ?? detail.label),
+    value: detail.value
+  })) ?? []
+)
 
 const requestBody = computed(() => ({
   egcs_fc_commitmenttype: model.commitmentType,
@@ -99,12 +169,12 @@ const calculate = async () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(requestBody.value)
     })
-    if (!response.ok) throw new Error(response.statusText)
+    if (!response.ok) throw new Error(await readErrorMessage(response))
     calculation.value = await response.json()
     errorMessage.value = null
   } catch (error: unknown) {
     calculation.value = null
-    errorMessage.value = error instanceof Error ? error.message : 'Unable to calculate payment amount.'
+    errorMessage.value = error instanceof Error ? error.message : t('extensions.gcs_automated_payments.calculation_error')
   } finally {
     isLoading.value = false
     publishResult()
@@ -131,10 +201,16 @@ watch(requestBody, calculate, { deep: true, immediate: true })
     </div>
 
     <div class="grid gap-3 sm:grid-cols-2">
-      <UFormField :label="t('extensions.gcs_automated_payments.release_holdback')">
+      <UFormField
+        :label="t('extensions.gcs_automated_payments.release_holdback')"
+        class="sm:col-span-2">
         <UCheckbox
           v-model="releaseHoldback"
-          :label="t('extensions.gcs_automated_payments.release_holdback_label')" />
+          :label="t('extensions.gcs_automated_payments.release_holdback_label')"
+          class="w-full"
+          :ui="{
+            label: 'leading-5'
+          }" />
       </UFormField>
 
       <UFormField
@@ -155,18 +231,35 @@ watch(requestBody, calculate, { deep: true, immediate: true })
     <p v-else-if="errorMessage" class="text-sm text-error">
       {{ errorMessage }}
     </p>
-    <dl v-else-if="calculation" class="grid gap-2 text-sm sm:grid-cols-2">
-      <div
-        v-for="detail in calculation.details"
-        :key="detail.label"
-        class="flex justify-between gap-3">
-        <dt class="text-muted">
-          {{ detail.label }}
-        </dt>
-        <dd class="font-medium text-highlighted">
-          {{ formatMoney(detail.value) }}
-        </dd>
-      </div>
-    </dl>
+    <UAccordion
+      v-else-if="calculation && calculationDetails.length > 0"
+      type="multiple"
+      :items="calculationDetailItems"
+      :default-value="[]"
+      :unmount-on-hide="false"
+      :ui="{
+        root: 'border-default border-t',
+        item: 'border-b-0',
+        header: 'm-0',
+        trigger: 'w-full px-0 py-2 text-left text-sm font-semibold text-highlighted transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/30',
+        body: 'px-0 pb-1 pt-2',
+        content: 'data-[state=open]:animate-none'
+      }">
+      <template #body>
+        <dl class="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+          <div
+            v-for="detail in calculationDetails"
+            :key="detail.label"
+            class="border-default grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3 border-b py-1.5">
+            <dt class="min-w-0 text-muted">
+              {{ detail.label }}
+            </dt>
+            <dd class="font-medium text-highlighted tabular-nums whitespace-nowrap">
+              {{ formatMoney(detail.value) }}
+            </dd>
+          </div>
+        </dl>
+      </template>
+    </UAccordion>
   </section>
 </template>

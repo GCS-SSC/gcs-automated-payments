@@ -1,5 +1,4 @@
 import {
-  createGcsExtensionUserError,
   registerGcsExtensionCreateOperationHandler
 } from '@gcs-ssc/extensions/server'
 import {
@@ -12,6 +11,7 @@ import {
   calculateAutomatedPaymentFromDb,
   savePaymentMetadata
 } from '../calculation-data'
+import { createAutomatedPaymentUserError } from '../errors'
 
 export default defineNitroPlugin(nitroApp => {
   registerGcsExtensionCreateOperationHandler(EXTENSION_KEY, 'agreement.payments.create', async context => {
@@ -74,20 +74,7 @@ export default defineNitroPlugin(nitroApp => {
 
     const submittedAmount = roundCurrency(parsed.data.egcs_fc_paymentamount ?? 0)
     if (submittedAmount > calculation.ceilingAmount) {
-      throw createGcsExtensionUserError({
-        code: 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING',
-        message: {
-          en: 'The payment amount exceeds the automated payment ceiling.',
-          fr: 'Le montant du paiement depasse le plafond du paiement automatise.'
-        },
-        details: [{
-          path: 'egcs_fc_paymentamount',
-          message: {
-            en: 'The payment amount exceeds the automated payment ceiling.',
-            fr: 'Le montant du paiement depasse le plafond du paiement automatise.'
-          }
-        }]
-      })
+      throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING', 'egcs_fc_paymentamount')
     }
 
     return { status: 'continue' }
