@@ -10,6 +10,7 @@
     "vue": "*"
   },
   "dependencies": {
-    "@gcs-ssc/extensions": "github:GCS-SSC/gcs-ssc-extensions#main"
+    "@gcs-ssc/extensions": "github:GCS-SSC/gcs-ssc-extensions#main",
+    "zod": "^4.3.6"
   }
 }
