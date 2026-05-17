@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { getClientRequestUrl } from '~/utils/client-request-url'
 /* eslint-disable jsdoc/require-jsdoc */
 import { computed, ref, watch } from 'vue'
 import type { Ref } from 'vue'
-import type { GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
+import { getClientRequestUrl, type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
 import {
   EXTENSION_KEY,
   type AutomatedPaymentCalculationResult
