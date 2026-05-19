@@ -3,6 +3,7 @@
 import { computed, ref, watch } from 'vue'
 import type { Ref } from 'vue'
 import type { GcsExtensionJsonConfig, GcsResolvedExtension } from '@gcs-ssc/extensions'
+import { ExtensionCheckbox, ExtensionFormField, useExtensionI18n } from '@gcs-ssc/extensions/ui'
 import {
   parseAutomatedPaymentsStreamConfig,
   type AutomatedPaymentsStreamConfig,
@@ -17,7 +18,7 @@ defineProps<{
 }>()
 
 const config = defineModel<GcsExtensionJsonConfig>({ required: true })
-const { t } = useI18n()
+const { t } = useExtensionI18n()
 
 const localConfig: Ref<AutomatedPaymentsStreamConfig> = ref(parseAutomatedPaymentsStreamConfig(config.value))
 
@@ -60,16 +61,16 @@ const updatePaymentType = (paymentType: AutomatedPaymentType, enabled: boolean) 
       </div>
 
       <div class="space-y-3">
-        <UFormField :label="t('extensions.gcs_automated_payments.enabled_payment_types')">
+        <ExtensionFormField :label="t('extensions.gcs_automated_payments.enabled_payment_types')">
           <div class="flex flex-wrap gap-3">
-            <UCheckbox
+            <ExtensionCheckbox
               v-for="option in paymentTypeOptions"
               :key="option.value"
               :model-value="localConfig.enabledPaymentTypes.includes(option.value as AutomatedPaymentType)"
               :label="option.label"
-              @update:model-value="value => updatePaymentType(option.value as AutomatedPaymentType, value === true)" />
+              @update:model-value="(value: boolean | 'indeterminate') => updatePaymentType(option.value as AutomatedPaymentType, value === true)" />
           </div>
-        </UFormField>
+        </ExtensionFormField>
       </div>
     </section>
   </div>

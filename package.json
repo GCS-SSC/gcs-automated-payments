@@ -3,14 +3,25 @@
   "private": true,
   "type": "module",
   "description": "GCS-SSC extension for automated agreement payment amount ceilings.",
+  "scripts": {
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:coverage": "vitest run --coverage --config vitest.config.ts",
+    "typecheck": "vue-tsc --noEmit"
+  },
   "peerDependencies": {
-    "@nuxt/ui": "*",
-    "nuxt": "*",
-    "tailwindcss": "*",
     "vue": "*"
   },
   "dependencies": {
-    "@gcs-ssc/extensions": "workspace:*",
+    "@gcs-ssc/extensions": "^0.1.0",
     "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "@vitejs/plugin-vue": "^6.0.4",
+    "h3": "1.15.5",
+    "kysely": "^0.28.11",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18",
+    "vue-tsc": "^3.2.4"
   }
 }

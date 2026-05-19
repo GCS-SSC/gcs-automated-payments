@@ -6,6 +6,7 @@ const savePaymentMetadataMock = vi.fn()
 
 vi.mock('@gcs-ssc/extensions/server', () => ({
   createGcsExtensionUserError: (options: Record<string, unknown>) => Object.assign(new Error(String(options.message)), options),
+  defineGcsExtensionNitroPlugin: (plugin: unknown) => plugin,
   registerGcsExtensionCreateOperationHandler: (...args: unknown[]) =>
     registerGcsExtensionCreateOperationHandlerMock(...args)
 }))

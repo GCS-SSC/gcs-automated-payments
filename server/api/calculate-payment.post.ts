@@ -1,5 +1,5 @@
 /* eslint-disable jsdoc/require-jsdoc */
-import { readBody } from 'h3'
+import { defineGcsExtensionRouteHandler } from '@gcs-ssc/extensions/server'
 import {
   AutomatedPaymentCalculateSchema,
   EXTENSION_KEY,
@@ -11,25 +11,22 @@ import {
   createAutomatedPaymentValidationError
 } from '../errors'
 
-export default async (event: Parameters<EventHandler>[0]) => {
-  const agreementId = event.context.params?.agreementId
+export default defineGcsExtensionRouteHandler(async ({ params, db, config, readBody }) => {
+  const agreementId = params.agreementId
   if (!agreementId) {
     throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_AGREEMENT_REQUIRED')
   }
 
-  const parsed = AutomatedPaymentCalculateSchema.safeParse(await readBody(event))
+  const parsed = AutomatedPaymentCalculateSchema.safeParse(await readBody())
   if (!parsed.success) {
     throw createAutomatedPaymentValidationError(parsed.error.issues)
   }
 
   const body = parsed.data
-  const extensionConfig = event.context.gcsExtension && typeof event.context.gcsExtension === 'object'
-    ? (event.context.gcsExtension as { config?: unknown }).config
-    : {}
   const extensionPayload = parseAutomatedPaymentExtensionPayload(body.extensions?.[EXTENSION_KEY])
 
   return await calculateAutomatedPaymentFromDb(
-    event.context.$db as Parameters<typeof calculateAutomatedPaymentFromDb>[0],
+    db as Parameters<typeof calculateAutomatedPaymentFromDb>[0],
     {
       agreementId,
       commitmentType: body.egcs_fc_commitmenttype,
@@ -40,6 +37,6 @@ export default async (event: Parameters<EventHandler>[0]) => {
       releaseHoldback: extensionPayload.releaseHoldback,
       holdbackReleaseAmount: extensionPayload.holdbackReleaseAmount
     },
-    extensionConfig
+    config
   )
-}
+})

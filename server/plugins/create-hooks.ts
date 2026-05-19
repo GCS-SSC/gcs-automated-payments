@@ -1,4 +1,5 @@
 import {
+  defineGcsExtensionNitroPlugin,
   registerGcsExtensionCreateOperationHandler
 } from '@gcs-ssc/extensions/server'
 import {
@@ -13,7 +14,7 @@ import {
 } from '../calculation-data'
 import { createAutomatedPaymentUserError } from '../errors'
 
-export default defineNitroPlugin(nitroApp => {
+export default defineGcsExtensionNitroPlugin(nitroApp => {
   registerGcsExtensionCreateOperationHandler(EXTENSION_KEY, 'agreement.payments.create', async context => {
     const parsed = AutomatedPaymentCalculateSchema.safeParse(context.validatedBody)
     if (!parsed.success) {

@@ -6,10 +6,11 @@ import {
   parseAutomatedPaymentExtensionPayload,
   parseAutomatedPaymentsStreamConfig,
   roundCurrency,
-  type AutomatedPaymentCalculationResult
+  type AutomatedPaymentCalculationResult,
+  type AutomatedPaymentsHoldbackSettings
 } from '../shared/automated-payments'
 
-type Db = Kysely<Record<string, unknown>>
+type Db = Kysely<Record<string, Record<string, unknown>>>
 
 export interface AutomatedPaymentServerInput {
   agreementId: string
@@ -54,7 +55,7 @@ const sumPeriodRows = (rows: AmountPeriodRow[], position: PeriodPosition): numbe
 const getAgreementHoldbackSettings = async (
   db: Db,
   agreementId: string
-) => {
+): Promise<AutomatedPaymentsHoldbackSettings> => {
   const row = await db
     .selectFrom('Funding_Case_Agreement_Profile')
     .select([

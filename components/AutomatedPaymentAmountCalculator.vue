@@ -2,7 +2,17 @@
 /* eslint-disable jsdoc/require-jsdoc */
 import { computed, ref, watch } from 'vue'
 import type { Ref } from 'vue'
-import { getClientRequestUrl, type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
+import { type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
+import {
+  ExtensionAccordion,
+  ExtensionBadge,
+  ExtensionCheckbox,
+  ExtensionFormField,
+  ExtensionIcon,
+  ExtensionInput,
+  useExtensionApi,
+  useExtensionI18n
+} from '@gcs-ssc/extensions/ui'
 import {
   EXTENSION_KEY,
   type AutomatedPaymentCalculationResult
@@ -27,14 +37,15 @@ const emit = defineEmits<{
   extensionPayload: [value: Record<string, unknown>]
 }>()
 
-const { n, t } = useI18n()
+const { n, t } = useExtensionI18n()
 const calculation: Ref<(AutomatedPaymentCalculationResult & { enabled?: boolean }) | null> = ref(null)
 const errorMessage: Ref<string | null> = ref(null)
 const isLoading: Ref<boolean> = ref(false)
 const releaseHoldback: Ref<boolean> = ref(false)
 const holdbackReleaseAmount: Ref<string> = ref('')
 
-const endpoint = computed(() => `/api/extensions/${extensionKey}/agreements/${context.agreementId}/calculate-payment`)
+const api = useExtensionApi(extensionKey)
+const endpoint = computed(() => `/agreements/${context.agreementId}/calculate-payment`)
 
 const calculationDetailLabelKeys: Record<string, string> = {
   baseAmount: 'extensions.gcs_automated_payments.details.base_amount',
@@ -163,17 +174,15 @@ const calculate = async () => {
   isLoading.value = true
   publishResult()
   try {
-    const response = await fetch(getClientRequestUrl(endpoint.value), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(requestBody.value)
-    })
-    if (!response.ok) throw new Error(await readErrorMessage(response))
-    calculation.value = await response.json()
+    calculation.value = await api.post<AutomatedPaymentCalculationResult>(endpoint.value, requestBody.value)
     errorMessage.value = null
   } catch (error: unknown) {
     calculation.value = null
-    errorMessage.value = error instanceof Error ? error.message : t('extensions.gcs_automated_payments.calculation_error')
+    if (error instanceof Response) {
+      errorMessage.value = await readErrorMessage(error)
+    } else {
+      errorMessage.value = error instanceof Error ? error.message : t('extensions.gcs_automated_payments.calculation_error')
+    }
   } finally {
     isLoading.value = false
     publishResult()
@@ -194,43 +203,43 @@ watch(requestBody, calculate, { deep: true, immediate: true })
           {{ t('extensions.gcs_automated_payments.calculator_description') }}
         </p>
       </div>
-      <UBadge v-if="calculation" color="primary" variant="subtle">
+      <ExtensionBadge v-if="calculation" color="primary" variant="subtle">
         {{ formatMoney(calculation.ceilingAmount) }}
-      </UBadge>
+      </ExtensionBadge>
     </div>
 
     <div class="grid gap-3 sm:grid-cols-2">
-      <UFormField
+      <ExtensionFormField
         :label="t('extensions.gcs_automated_payments.release_holdback')"
         class="sm:col-span-2">
-        <UCheckbox
+        <ExtensionCheckbox
           v-model="releaseHoldback"
           :label="t('extensions.gcs_automated_payments.release_holdback_label')"
           class="w-full"
           :ui="{
             label: 'leading-5'
           }" />
-      </UFormField>
+      </ExtensionFormField>
 
-      <UFormField
+      <ExtensionFormField
         v-if="releaseHoldback"
         :label="t('extensions.gcs_automated_payments.holdback_release_amount')">
-        <UInput
+        <ExtensionInput
           v-model="holdbackReleaseAmount"
           type="number"
           min="0"
           step="0.01" />
-      </UFormField>
+      </ExtensionFormField>
     </div>
 
     <div v-if="isLoading" class="flex items-center gap-2 text-sm text-muted">
-      <UIcon name="i-lucide-loader-circle" class="animate-spin" />
+      <ExtensionIcon name="i-lucide-loader-circle" class="animate-spin" />
       {{ t('extensions.gcs_automated_payments.calculating') }}
     </div>
     <p v-else-if="errorMessage" class="text-sm text-error">
       {{ errorMessage }}
     </p>
-    <UAccordion
+    <ExtensionAccordion
       v-else-if="calculation && calculationDetails.length > 0"
       type="multiple"
       :items="calculationDetailItems"
@@ -259,6 +268,6 @@ watch(requestBody, calculate, { deep: true, immediate: true })
           </div>
         </dl>
       </template>
-    </UAccordion>
+    </ExtensionAccordion>
   </section>
 </template>
