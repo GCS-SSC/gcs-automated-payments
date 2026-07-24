@@ -1,5 +1,4 @@
 <script setup lang="ts">
-/* eslint-disable jsdoc/require-jsdoc */
 import { computed, ref, watch } from 'vue'
 import type { Ref } from 'vue'
 import { type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
@@ -158,6 +157,7 @@ const publishResult = () => {
   })
 }
 
+/** Recalculates the payment ceiling from the current form values and publishes the result. */
 const calculate = async () => {
   emit('extensionPayload', {
     releaseHoldback: releaseHoldback.value,

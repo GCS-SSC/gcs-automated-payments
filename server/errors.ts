@@ -102,10 +102,12 @@ const createLocalizedUserError = (options: GcsExtensionUserErrorOptions) => {
   })
 }
 
+/** Returns the localized message registered for an automated-payment error code. */
 export const getAutomatedPaymentErrorMessage = (
   code: AutomatedPaymentErrorCode
 ): GcsExtensionLocalizedMessage => automatedPaymentErrorMessages[code]
 
+/** Creates a localized automated-payment user error with an optional field path. */
 export const createAutomatedPaymentUserError = (
   code: AutomatedPaymentErrorCode,
   path?: string
@@ -120,6 +122,7 @@ export const createAutomatedPaymentUserError = (
     : undefined
 })
 
+/** Converts Zod issues into localized field-level automated-payment error details. */
 export const createAutomatedPaymentValidationError = (
   issues: z.ZodIssue[]
 ) => createLocalizedUserError({

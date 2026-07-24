@@ -1,4 +1,3 @@
-/* eslint-disable jsdoc/require-jsdoc */
 import { defineGcsExtensionRouteHandler } from '@gcs-ssc/extensions/server'
 import {
   AutomatedPaymentCalculateSchema,

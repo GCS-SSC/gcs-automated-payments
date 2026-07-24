@@ -1,4 +1,3 @@
-/* eslint-disable jsdoc/require-jsdoc */
 import { z } from 'zod'
 
 export const EXTENSION_KEY = 'gcs-automated-payments'
@@ -83,6 +82,7 @@ export const AutomatedPaymentCalculateSchema = z.object({
   path: ['egcs_fc_periodend']
 })
 
+/** Rounds a finite numeric value to Canadian currency precision, returning zero for non-finite input. */
 export const roundCurrency = (value: number): number => {
   if (!Number.isFinite(value)) {
     return 0
@@ -92,6 +92,7 @@ export const roundCurrency = (value: number): number => {
 
 const lowerCurrency = (values: number[]): number => Math.min(...values.map(value => roundCurrency(value)))
 
+/** Normalizes an unknown stream configuration to the supported automated payment types. */
 export const parseAutomatedPaymentsStreamConfig = (value: unknown): AutomatedPaymentsStreamConfig => {
   const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {}
   const enabledPaymentTypes = Array.isArray(raw.enabledPaymentTypes)
@@ -103,11 +104,13 @@ export const parseAutomatedPaymentsStreamConfig = (value: unknown): AutomatedPay
   }
 }
 
+/** Parses payment extension metadata, falling back to the default holdback settings when invalid. */
 export const parseAutomatedPaymentExtensionPayload = (value: unknown): AutomatedPaymentExtensionPayload => {
   const parsed = AutomatedPaymentExtensionPayloadSchema.safeParse(value)
   return parsed.success ? parsed.data : defaultAutomatedPaymentExtensionPayload
 }
 
+/** Calculates the eligible payment ceiling and holdback breakdown from agreement financial totals. */
 export const calculateAutomatedPaymentAmount = (
   input: AutomatedPaymentCalculationInput,
   holdbackSettings: AutomatedPaymentsHoldbackSettings

@@ -1,4 +1,3 @@
-/* eslint-disable jsdoc/require-jsdoc */
 import type { Kysely } from 'kysely'
 import {
   EXTENSION_KEY,
@@ -52,6 +51,7 @@ const sumRows = (rows: Array<{ amount?: unknown }>): number =>
 const sumPeriodRows = (rows: AmountPeriodRow[], position: PeriodPosition): number =>
   roundCurrency(rows.reduce((total, row) => total + (isOnOrBefore(row, position) ? row.amount : 0), 0))
 
+/** Loads the agreement's holdback percentage and basis, applying safe defaults for missing values. */
 const getAgreementHoldbackSettings = async (
   db: Db,
   agreementId: string
@@ -75,6 +75,7 @@ const getAgreementHoldbackSettings = async (
   }
 }
 
+/** Returns the extension's agreement-level settings, which are currently empty. */
 export const getAgreementSettings = async (
   db: Db,
   agreementId: string
@@ -84,6 +85,7 @@ export const getAgreementSettings = async (
   return {}
 }
 
+/** Accepts agreement-level settings while the extension has no settings to persist. */
 export const saveAgreementSettings = async (
   db: Db,
   agreementId: string,
@@ -94,6 +96,7 @@ export const saveAgreementSettings = async (
   void value
 }
 
+/** Creates or updates the automated-payment metadata stored for a payment. */
 export const savePaymentMetadata = async (
   db: Db,
   paymentId: string,
@@ -130,6 +133,7 @@ export const savePaymentMetadata = async (
     .execute()
 }
 
+/** Resolves a selected budget fiscal year and month into a comparable period position. */
 const getSelectedPaymentPeriod = async (
   db: Db,
   agreementId: string,
@@ -152,6 +156,7 @@ const getSelectedPaymentPeriod = async (
   }
 }
 
+/** Loads reconciled claim amounts and their fiscal-period positions for an agreement. */
 const getClaimRows = async (db: Db, agreementId: string): Promise<AmountPeriodRow[]> => {
   const rows = await db
     .selectFrom('Funding_Case_Agreement_Claim_Reconcile_Line_Item')
@@ -209,6 +214,7 @@ const getLastClaimPosition = (claimRows: AmountPeriodRow[], selectedPosition: Pe
   })
 }
 
+/** Loads active forecast line amounts and their fiscal-period positions for an agreement. */
 const getForecastRows = async (db: Db, agreementId: string): Promise<AmountPeriodRow[]> => {
   const rows = await db
     .selectFrom('Funding_Case_Agreement_Forecast_Line_Item')
@@ -243,6 +249,7 @@ const getForecastRows = async (db: Db, agreementId: string): Promise<AmountPerio
   }))
 }
 
+/** Loads non-denied payments for an agreement, optionally excluding the payment being calculated. */
 const getPaymentRows = async (db: Db, agreementId: string, excludePaymentId?: string): Promise<AmountPeriodRow[]> => {
   let query = db
     .selectFrom('Funding_Case_Agreement_Payment')
@@ -285,6 +292,7 @@ const getPaymentRows = async (db: Db, agreementId: string, excludePaymentId?: st
   }))
 }
 
+/** Sums holdback releases recorded on eligible payments through the selected period. */
 const getHoldbackReleasedToDate = async (
   db: Db,
   paymentRows: AmountPeriodRow[],
@@ -314,6 +322,7 @@ const getHoldbackReleasedToDate = async (
   }, 0))
 }
 
+/** Calculates the unpaid balance of approved active commitment lines for a fiscal year and type. */
 const getCommitmentRemaining = async (
   db: Db,
   agreementId: string,
@@ -391,6 +400,7 @@ const getCommitmentRemaining = async (
   return roundCurrency(Math.max(lineTotal - sumRows(paymentLines), 0))
 }
 
+/** Aggregates agreement, final-year, and future-year budget totals for the selected period. */
 const getBudgetTotals = async (
   db: Db,
   agreementId: string,
@@ -429,6 +439,7 @@ const getBudgetTotals = async (
   }
 }
 
+/** Collects agreement financials and calculates the automated payment result for a selected period. */
 export const calculateAutomatedPaymentFromDb = async (
   db: Db,
   input: AutomatedPaymentServerInput,
