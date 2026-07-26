@@ -103,7 +103,7 @@ const createLocalizedUserError = (options: GcsExtensionUserErrorOptions) => {
 }
 
 /** Returns the localized message registered for an automated-payment error code. */
-export const getAutomatedPaymentErrorMessage = (
+const getAutomatedPaymentErrorMessage = (
   code: AutomatedPaymentErrorCode
 ): GcsExtensionLocalizedMessage => automatedPaymentErrorMessages[code]
 

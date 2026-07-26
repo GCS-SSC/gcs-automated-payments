@@ -75,27 +75,6 @@ const getAgreementHoldbackSettings = async (
   }
 }
 
-/** Returns the extension's agreement-level settings, which are currently empty. */
-export const getAgreementSettings = async (
-  db: Db,
-  agreementId: string
-) => {
-  void db
-  void agreementId
-  return {}
-}
-
-/** Accepts agreement-level settings while the extension has no settings to persist. */
-export const saveAgreementSettings = async (
-  db: Db,
-  agreementId: string,
-  value: Record<string, unknown>
-) => {
-  void db
-  void agreementId
-  void value
-}
-
 /** Creates or updates the automated-payment metadata stored for a payment. */
 export const savePaymentMetadata = async (
   db: Db,

@@ -2,10 +2,10 @@ import { z } from 'zod'
 
 export const EXTENSION_KEY = 'gcs-automated-payments'
 
-export const automatedPaymentTypes = ['reimbursement', 'advance'] as const
+const automatedPaymentTypes = ['reimbursement', 'advance'] as const
 export type AutomatedPaymentType = (typeof automatedPaymentTypes)[number]
 
-export const holdbackBasisValues = ['agreement-total', 'final-fiscal-year'] as const
+const holdbackBasisValues = ['agreement-total', 'final-fiscal-year'] as const
 export type HoldbackBasis = (typeof holdbackBasisValues)[number]
 
 export interface AutomatedPaymentsHoldbackSettings {
@@ -49,16 +49,16 @@ export interface AutomatedPaymentCalculationResult {
   details: Array<{ label: string, value: number }>
 }
 
-export const defaultAutomatedPaymentsStreamConfig: AutomatedPaymentsStreamConfig = {
+const defaultAutomatedPaymentsStreamConfig: AutomatedPaymentsStreamConfig = {
   enabledPaymentTypes: ['reimbursement', 'advance']
 }
 
-export const defaultAutomatedPaymentExtensionPayload: AutomatedPaymentExtensionPayload = {
+const defaultAutomatedPaymentExtensionPayload: AutomatedPaymentExtensionPayload = {
   releaseHoldback: false,
   holdbackReleaseAmount: 0
 }
 
-export const AutomatedPaymentExtensionPayloadSchema = z.object({
+const AutomatedPaymentExtensionPayloadSchema = z.object({
   releaseHoldback: z.boolean().default(false),
   holdbackReleaseAmount: z.preprocess(
     value => value === '' || value === undefined || value === null ? 0 : value,

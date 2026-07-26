@@ -1,15 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { GcsExtensionRouteEvent } from '@gcs-ssc/extensions/server'
 
 const readBodyMock = vi.fn()
 const calculateAutomatedPaymentFromDbMock = vi.fn()
 
 vi.mock('h3', () => ({
+  isEvent: () => true,
   readBody: (...args: unknown[]) => readBodyMock(...args)
 }))
 
 vi.mock('../../server/calculation-data', () => ({
   calculateAutomatedPaymentFromDb: (...args: unknown[]) => calculateAutomatedPaymentFromDbMock(...args)
 }))
+
+const createRouteEvent = (context: GcsExtensionRouteEvent['context']): GcsExtensionRouteEvent => ({ context })
 
 describe('gcs automated payments calculation route', () => {
   beforeEach(() => {
@@ -20,7 +24,7 @@ describe('gcs automated payments calculation route', () => {
   it('requires an agreement id before calculating', async () => {
     const handler = (await import('../../server/api/calculate-payment.post')).default
 
-    await expect(handler({ context: { params: {} } } as never)).rejects.toMatchObject({
+    await expect(handler(createRouteEvent({ $db: {}, params: {} }))).rejects.toMatchObject({
       code: 'GCS_AUTOMATED_PAYMENTS_AGREEMENT_REQUIRED'
     })
     expect(readBodyMock).not.toHaveBeenCalled()
@@ -37,12 +41,10 @@ describe('gcs automated payments calculation route', () => {
     })
     const handler = (await import('../../server/api/calculate-payment.post')).default
 
-    await expect(handler({
-      context: {
-        params: { agreementId: 'agreement-1' },
-        $db: {}
-      }
-    } as never)).rejects.toMatchObject({
+    await expect(handler(createRouteEvent({
+      params: { agreementId: 'agreement-1' },
+      $db: {}
+    }))).rejects.toMatchObject({
       code: 'GCS_AUTOMATED_PAYMENTS_INVALID_CALCULATION_INPUT',
       details: expect.arrayContaining([
         expect.objectContaining({
@@ -89,13 +91,11 @@ describe('gcs automated payments calculation route', () => {
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce(result)
     const handler = (await import('../../server/api/calculate-payment.post')).default
 
-    await expect(handler({
-      context: {
-        params: { agreementId: 'agreement-1' },
-        $db: db,
-        gcsExtension: { config: streamConfig }
-      }
-    } as never)).resolves.toBe(result)
+    await expect(handler(createRouteEvent({
+      params: { agreementId: 'agreement-1' },
+      $db: db,
+      gcsExtension: { config: streamConfig }
+    }))).resolves.toBe(result)
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(db, {
       agreementId: 'agreement-1',
       commitmentType: 'commitment-1',
