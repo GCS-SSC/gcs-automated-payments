@@ -7,7 +7,7 @@ import {
   roundCurrency,
   type AutomatedPaymentCalculationResult,
   type AutomatedPaymentsHoldbackSettings
-} from '../shared/automated-payments'
+} from '../shared/automated-payments.ts'
 
 type Db = Kysely<Record<string, Record<string, unknown>>>
 

@@ -3,12 +3,12 @@ import {
   AutomatedPaymentCalculateSchema,
   EXTENSION_KEY,
   parseAutomatedPaymentExtensionPayload
-} from '../../shared/automated-payments'
-import { calculateAutomatedPaymentFromDb } from '../calculation-data'
+} from '../../shared/automated-payments.ts'
+import { calculateAutomatedPaymentFromDb } from '../calculation-data.ts'
 import {
   createAutomatedPaymentUserError,
   createAutomatedPaymentValidationError
-} from '../errors'
+} from '../errors.ts'
 
 export default defineGcsExtensionRouteHandler(async ({ params, db, config, readBody }) => {
   const agreementId = params.agreementId
