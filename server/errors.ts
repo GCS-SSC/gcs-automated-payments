@@ -18,6 +18,8 @@ type AutomatedPaymentErrorCode =
   | 'GCS_AUTOMATED_PAYMENTS_AMOUNT_INVALID'
   | 'GCS_AUTOMATED_PAYMENTS_OPTIONS_INVALID'
   | 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING'
+  | 'GCS_AUTOMATED_PAYMENTS_MISSING_HOLDBACK_BASES'
+  | 'GCS_AUTOMATED_PAYMENTS_UNSUPPORTED_HOLDBACK_BASIS'
 
 const automatedPaymentErrorMessages: Record<AutomatedPaymentErrorCode, GcsExtensionLocalizedMessage> = {
   GCS_AUTOMATED_PAYMENTS_AGREEMENT_REQUIRED: {
@@ -63,6 +65,14 @@ const automatedPaymentErrorMessages: Record<AutomatedPaymentErrorCode, GcsExtens
   GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING: {
     en: 'The payment amount exceeds the automated payment ceiling. Reduce the amount before saving.',
     fr: 'Le montant du paiement depasse le plafond du paiement automatise. Reduisez le montant avant d enregistrer.'
+  },
+  GCS_AUTOMATED_PAYMENTS_MISSING_HOLDBACK_BASES: {
+    en: 'Automated payments cannot be enabled because the stream is missing required holdback bases.',
+    fr: 'Les paiements automatises ne peuvent pas etre actives, car il manque des bases de retenue obligatoires au volet.'
+  },
+  GCS_AUTOMATED_PAYMENTS_UNSUPPORTED_HOLDBACK_BASIS: {
+    en: 'The agreement must use an automated-payments holdback basis configured for the stream.',
+    fr: 'L entente doit utiliser une base de retenue des paiements automatises configuree pour le volet.'
   }
 }
 
@@ -121,6 +131,27 @@ export const createAutomatedPaymentUserError = (
       }]
     : undefined
 })
+
+/** Creates an actionable bilingual activation error listing missing language-independent codes. */
+export const createAutomatedPaymentsMissingHoldbackBasesError = (
+  missingCodes: string[]
+) => {
+  const codes = missingCodes.join(', ')
+  const message: GcsExtensionLocalizedMessage = {
+    en: `Automated payments cannot be enabled. Add active stream holdback bases for these agency holdback-basis codes: ${codes}.`,
+    fr: `Les paiements automatises ne peuvent pas etre actives. Ajoutez des bases de retenue actives au volet pour les codes de base de retenue de l organisme suivants : ${codes}.`
+  }
+
+  return createLocalizedUserError({
+    code: 'GCS_AUTOMATED_PAYMENTS_MISSING_HOLDBACK_BASES',
+    message,
+    details: [{
+      path: 'holdbackBases',
+      code: 'GCS_AUTOMATED_PAYMENTS_MISSING_HOLDBACK_BASES',
+      message
+    }]
+  })
+}
 
 /** Converts Zod issues into localized field-level automated-payment error details. */
 export const createAutomatedPaymentValidationError = (

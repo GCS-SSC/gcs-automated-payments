@@ -8,6 +8,7 @@ import {
   type AutomatedPaymentCalculationResult,
   type AutomatedPaymentsHoldbackSettings
 } from '../shared/automated-payments.ts'
+import { createAutomatedPaymentUserError } from './errors.ts'
 
 type Db = Kysely<Record<string, Record<string, unknown>>>
 
@@ -51,27 +52,43 @@ const sumRows = (rows: Array<{ amount?: unknown }>): number =>
 const sumPeriodRows = (rows: AmountPeriodRow[], position: PeriodPosition): number =>
   roundCurrency(rows.reduce((total, row) => total + (isOnOrBefore(row, position) ? row.amount : 0), 0))
 
-/** Loads the agreement's holdback percentage and basis, applying safe defaults for missing values. */
-const getAgreementHoldbackSettings = async (
+/** Loads the agreement's holdback percentage and semantic agency holdback-basis code. */
+export const getAgreementHoldbackSettings = async (
   db: Db,
   agreementId: string
 ): Promise<AutomatedPaymentsHoldbackSettings> => {
   const row = await db
     .selectFrom('Funding_Case_Agreement_Profile')
+    .innerJoin(
+      'Transfer_Payment_Stream_Holdback_Basis',
+      'Transfer_Payment_Stream_Holdback_Basis.id',
+      'Funding_Case_Agreement_Profile.egcs_fc_holdbackbasis'
+    )
+    .innerJoin(
+      'Agency_Holdback_Basis',
+      'Agency_Holdback_Basis.id',
+      'Transfer_Payment_Stream_Holdback_Basis.egcs_tp_agencyholdback'
+    )
     .select([
-      'egcs_fc_holdback',
-      'egcs_fc_holdbackbasis'
+      'Funding_Case_Agreement_Profile.egcs_fc_holdback',
+      'Agency_Holdback_Basis.egcs_ay_languageindependentcode as holdback_basis_code'
     ])
-    .where('id', '=', agreementId)
-    .where('_deleted', '=', false)
+    .where('Funding_Case_Agreement_Profile.id', '=', agreementId)
+    .where('Funding_Case_Agreement_Profile._deleted', '=', false)
+    .where('Transfer_Payment_Stream_Holdback_Basis._deleted', '=', false)
+    .where('Agency_Holdback_Basis._deleted', '=', false)
     .executeTakeFirst() as {
       egcs_fc_holdback?: unknown
-      egcs_fc_holdbackbasis?: unknown
+      holdback_basis_code?: unknown
     } | undefined
+
+  if (row?.holdback_basis_code !== 'agreement-total' && row?.holdback_basis_code !== 'final-fiscal-year') {
+    throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_UNSUPPORTED_HOLDBACK_BASIS')
+  }
 
   return {
     holdbackPercent: Number(row?.egcs_fc_holdback ?? 0),
-    holdbackBasis: row?.egcs_fc_holdbackbasis === 'final-fiscal-year' ? 'final-fiscal-year' : 'agreement-total'
+    holdbackBasis: row.holdback_basis_code
   }
 }
 

@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const registerGcsExtensionCreateOperationHandlerMock = vi.fn()
+const lifecycleHookMock = vi.fn()
 const calculateAutomatedPaymentFromDbMock = vi.fn()
 const savePaymentMetadataMock = vi.fn()
+const guardAutomatedPaymentsActivationMock = vi.fn()
 
 vi.mock('@gcs-ssc/extensions/server', () => ({
   createGcsExtensionUserError: (options: Record<string, unknown>) => Object.assign(new Error(String(options.message)), options),
@@ -14,6 +16,10 @@ vi.mock('@gcs-ssc/extensions/server', () => ({
 vi.mock('../../server/calculation-data', () => ({
   calculateAutomatedPaymentFromDb: (...args: unknown[]) => calculateAutomatedPaymentFromDbMock(...args),
   savePaymentMetadata: (...args: unknown[]) => savePaymentMetadataMock(...args)
+}))
+
+vi.mock('../../server/activation', () => ({
+  guardAutomatedPaymentsActivation: (...args: unknown[]) => guardAutomatedPaymentsActivationMock(...args)
 }))
 
 const validBody = {
@@ -33,7 +39,7 @@ const validBody = {
 
 const loadHandler = async () => {
   const plugin = (await import('../../server/plugins/create-hooks')).default as (nitroApp: unknown) => void
-  plugin({ hooks: {} })
+  plugin({ hooks: { hook: lifecycleHookMock } })
   return registerGcsExtensionCreateOperationHandlerMock.mock.calls[0]?.[2] as (context: Record<string, unknown>) => Promise<unknown>
 }
 
@@ -47,6 +53,43 @@ describe('gcs automated payments create hooks', () => {
       ceilingAmount: 100,
       holdbackReleaseAmount: 8
     })
+  })
+
+  it('registers the extension activation guard hook', async () => {
+    await loadHandler()
+
+    expect(lifecycleHookMock).toHaveBeenCalledWith(
+      'gcs:extension:enable-guard',
+      expect.any(Function)
+    )
+  })
+
+  it('validates only automated-payments stream activation requests', async () => {
+    await loadHandler()
+    const guard = lifecycleHookMock.mock.calls[0]?.[1] as (context: Record<string, unknown>) => Promise<void>
+    const db = {}
+
+    await guard({
+      extensionKey: 'gcs-automated-payments',
+      scope: 'stream',
+      streamId: 'stream-1',
+      db
+    })
+    await guard({
+      extensionKey: 'another-extension',
+      scope: 'stream',
+      streamId: 'stream-2',
+      db
+    })
+    await guard({
+      extensionKey: 'gcs-automated-payments',
+      scope: 'agency',
+      agencyId: 'agency-1',
+      db
+    })
+
+    expect(guardAutomatedPaymentsActivationMock).toHaveBeenCalledOnce()
+    expect(guardAutomatedPaymentsActivationMock).toHaveBeenCalledWith(db, 'stream-1')
   })
 
   it('continues when the host body is not a payment calculation payload', async () => {
