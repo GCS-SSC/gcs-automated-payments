@@ -11,6 +11,15 @@ const createQuery = (row: Record<string, unknown> | undefined) => {
 }
 
 describe('automated payment calculation data', () => {
+  it('scopes stable fiscal-year joins to the current agreement budget version', async () => {
+    const source = await import('node:fs/promises').then(fs => fs.readFile(
+      new URL('../../server/calculation-data.ts', import.meta.url),
+      'utf8'
+    ))
+
+    expect(source.match(/Funding_Case_Agreement_Budget_Version\.egcs_fc_iscurrent/g)).toHaveLength(5)
+    expect(source.match(/Funding_Case_Agreement_Budget_Version\._deleted/g)).toHaveLength(5)
+  })
   it('derives final-fiscal-year from the agency language-independent code', async () => {
     const db = createQuery({
       egcs_fc_holdback: 12.5,
