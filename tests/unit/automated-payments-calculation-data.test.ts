@@ -1,5 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFile } from 'node:fs/promises'
 import { getAgreementHoldbackSettings } from '../../server/calculation-data'
+
+const calculationDataPath = new URL('../../server/calculation-data.ts', import.meta.url)
+
+const getQuerySource = (source: string, functionName: string, nextFunctionName: string): string => {
+  const start = source.indexOf(`const ${functionName} =`)
+  const end = source.indexOf(`const ${nextFunctionName} =`, start)
+
+  expect(start).toBeGreaterThanOrEqual(0)
+  expect(end).toBeGreaterThan(start)
+
+  return source.slice(start, end)
+}
 
 const createQuery = (row: Record<string, unknown> | undefined) => {
   const query: Record<string, ReturnType<typeof vi.fn>> = {}
@@ -11,6 +24,23 @@ const createQuery = (row: Record<string, unknown> | undefined) => {
 }
 
 describe('automated payment calculation data', () => {
+  it('scopes stable fiscal-year joins to the current agreement budget version', async () => {
+    const source = await readFile(calculationDataPath, 'utf8')
+    const queries = [
+      getQuerySource(source, 'getSelectedPaymentPeriod', 'getClaimRows'),
+      getQuerySource(source, 'getClaimRows', 'getLastClaimPosition'),
+      getQuerySource(source, 'getForecastRows', 'getPaymentRows'),
+      getQuerySource(source, 'getPaymentRows', 'getHoldbackReleasedToDate'),
+      getQuerySource(source, 'getCommitmentRemaining', 'getBudgetTotals')
+    ]
+
+    for (const query of queries) {
+      expect(query).toContain('stableBudgetFiscalYearId')
+      expect(query).toContain(".innerJoin('Funding_Case_Agreement_Budget_Version'")
+      expect(query).toContain(".where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)")
+      expect(query).toContain(".where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)")
+    }
+  })
   it('derives final-fiscal-year from the agency language-independent code', async () => {
     const db = createQuery({
       egcs_fc_holdback: 12.5,

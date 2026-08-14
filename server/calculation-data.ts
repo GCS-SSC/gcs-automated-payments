@@ -1,3 +1,4 @@
+import { sql } from 'kysely'
 import type { Kysely } from 'kysely'
 import {
   EXTENSION_KEY,
@@ -11,6 +12,11 @@ import {
 import { createAutomatedPaymentUserError } from './errors.ts'
 
 type Db = Kysely<Record<string, Record<string, unknown>>>
+
+const stableBudgetFiscalYearId = sql<string>`COALESCE(
+  "Funding_Case_Agreement_Budget_Fiscal_Year"."egcs_fc_originalbudgetfiscalyear",
+  "Funding_Case_Agreement_Budget_Fiscal_Year"."id"
+)`
 
 export interface AutomatedPaymentServerInput {
   agreementId: string
@@ -138,11 +144,14 @@ const getSelectedPaymentPeriod = async (
 ): Promise<PeriodPosition> => {
   const row = await db
     .selectFrom('Funding_Case_Agreement_Budget_Fiscal_Year')
+    .innerJoin('Funding_Case_Agreement_Budget_Version', 'Funding_Case_Agreement_Budget_Version.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_budgetversion')
     .innerJoin('Agency_Fiscal_Year', 'Agency_Fiscal_Year.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear')
     .select('Agency_Fiscal_Year.egcs_ay_fiscalyear as fiscal_year_order')
-    .where('Funding_Case_Agreement_Budget_Fiscal_Year.id', '=', fiscalYearId)
+    .where(stableBudgetFiscalYearId, '=', fiscalYearId)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fundingagreement', '=', agreementId)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
+    .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
+    .where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)
     .where('Agency_Fiscal_Year._deleted', '=', false)
     .executeTakeFirst() as { fiscal_year_order?: unknown } | undefined
 
@@ -166,11 +175,10 @@ const getClaimRows = async (db: Db, agreementId: string): Promise<AmountPeriodRo
       'Funding_Case_Agreement_Claim.id',
       'Funding_Case_Agreement_Claim_Reconcile.egcs_fc_fundingagreementclaim'
     )
-    .innerJoin(
-      'Funding_Case_Agreement_Budget_Fiscal_Year',
-      'Funding_Case_Agreement_Budget_Fiscal_Year.id',
-      'Funding_Case_Agreement_Claim.egcs_fc_fiscalyear'
-    )
+    .innerJoin('Funding_Case_Agreement_Budget_Fiscal_Year', join => join.on(
+      stableBudgetFiscalYearId, '=', sql.ref('Funding_Case_Agreement_Claim.egcs_fc_fiscalyear')
+    ))
+    .innerJoin('Funding_Case_Agreement_Budget_Version', 'Funding_Case_Agreement_Budget_Version.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_budgetversion')
     .innerJoin('Agency_Fiscal_Year', 'Agency_Fiscal_Year.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear')
     .select([
       'Funding_Case_Agreement_Claim_Reconcile_Line_Item.egcs_fc_reconciled as amount',
@@ -183,6 +191,8 @@ const getClaimRows = async (db: Db, agreementId: string): Promise<AmountPeriodRo
     .where('Funding_Case_Agreement_Claim_Reconcile._deleted', '=', false)
     .where('Funding_Case_Agreement_Claim_Reconcile_Line_Item._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
+    .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
+    .where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)
     .where('Agency_Fiscal_Year._deleted', '=', false)
     .execute() as Array<{ amount?: unknown, month?: unknown, fiscal_year_order?: unknown }>
 
@@ -219,11 +229,10 @@ const getForecastRows = async (db: Db, agreementId: string): Promise<AmountPerio
       'Funding_Case_Agreement_Forecast.id',
       'Funding_Case_Agreement_Forecast_Line_Item.egcs_fc_agreementforecast'
     )
-    .innerJoin(
-      'Funding_Case_Agreement_Budget_Fiscal_Year',
-      'Funding_Case_Agreement_Budget_Fiscal_Year.id',
-      'Funding_Case_Agreement_Forecast.egcs_fc_fiscalyear'
-    )
+    .innerJoin('Funding_Case_Agreement_Budget_Fiscal_Year', join => join.on(
+      stableBudgetFiscalYearId, '=', sql.ref('Funding_Case_Agreement_Forecast.egcs_fc_fiscalyear')
+    ))
+    .innerJoin('Funding_Case_Agreement_Budget_Version', 'Funding_Case_Agreement_Budget_Version.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_budgetversion')
     .innerJoin('Agency_Fiscal_Year', 'Agency_Fiscal_Year.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear')
     .select([
       'Funding_Case_Agreement_Forecast_Line_Item.egcs_fc_amount as amount',
@@ -235,6 +244,8 @@ const getForecastRows = async (db: Db, agreementId: string): Promise<AmountPerio
     .where('Funding_Case_Agreement_Forecast._deleted', '=', false)
     .where('Funding_Case_Agreement_Forecast_Line_Item._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
+    .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
+    .where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)
     .where('Agency_Fiscal_Year._deleted', '=', false)
     .execute() as Array<{ amount?: unknown, month?: unknown, fiscal_year_order?: unknown }>
 
@@ -254,11 +265,10 @@ const getPaymentRows = async (db: Db, agreementId: string, excludePaymentId?: st
       'Funding_Case_Agreement_Commitment.id',
       'Funding_Case_Agreement_Payment.egcs_fc_fundingagreementcommitment'
     )
-    .innerJoin(
-      'Funding_Case_Agreement_Budget_Fiscal_Year',
-      'Funding_Case_Agreement_Budget_Fiscal_Year.id',
-      'Funding_Case_Agreement_Payment.egcs_fc_fiscalyear'
-    )
+    .innerJoin('Funding_Case_Agreement_Budget_Fiscal_Year', join => join.on(
+      stableBudgetFiscalYearId, '=', sql.ref('Funding_Case_Agreement_Payment.egcs_fc_fiscalyear')
+    ))
+    .innerJoin('Funding_Case_Agreement_Budget_Version', 'Funding_Case_Agreement_Budget_Version.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_budgetversion')
     .innerJoin('Agency_Fiscal_Year', 'Agency_Fiscal_Year.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear')
     .select([
       'Funding_Case_Agreement_Payment.id as id',
@@ -271,6 +281,8 @@ const getPaymentRows = async (db: Db, agreementId: string, excludePaymentId?: st
     .where('Funding_Case_Agreement_Payment._deleted', '=', false)
     .where('Funding_Case_Agreement_Commitment._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
+    .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
+    .where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)
     .where('Agency_Fiscal_Year._deleted', '=', false)
 
   if (excludePaymentId) {
@@ -352,6 +364,7 @@ const getCommitmentRemaining = async (
       'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear',
       'Transfer_Payment_Fiscal_Year_Budget.egcs_tp_fiscalyear'
     )
+    .innerJoin('Funding_Case_Agreement_Budget_Version', 'Funding_Case_Agreement_Budget_Version.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_budgetversion')
     .select([
       'Funding_Case_Agreement_Commitment_Line.id as id',
       'Funding_Case_Agreement_Commitment_Line.egcs_fc_amount as amount'
@@ -360,13 +373,15 @@ const getCommitmentRemaining = async (
     .where('Funding_Case_Agreement_Commitment.egcs_fc_type', '=', commitmentType)
     .where('Funding_Case_Agreement_Commitment.egcs_fc_active', '=', true)
     .where('Funding_Case_Agreement_Commitment.egcs_fc_status', '=', 'approved')
-    .where('Funding_Case_Agreement_Budget_Fiscal_Year.id', '=', fiscalYearId)
+    .where(stableBudgetFiscalYearId, '=', fiscalYearId)
     .where('Funding_Case_Agreement_Commitment._deleted', '=', false)
     .where('Funding_Case_Agreement_Commitment_Line._deleted', '=', false)
     .where('Transfer_Payment_Stream_Commitment._deleted', '=', false)
     .where('Transfer_Payment_Stream_Budget._deleted', '=', false)
     .where('Transfer_Payment_Fiscal_Year_Budget._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
+    .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
+    .where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)
     .execute() as Array<{ id?: unknown, amount?: unknown }>
 
   const lineTotal = sumRows(commitmentLines)
