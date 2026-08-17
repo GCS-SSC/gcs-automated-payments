@@ -4,6 +4,7 @@
   "type": "module",
   "description": "GCS-SSC extension for automated agreement payment amount ceilings.",
   "scripts": {
+    "test:e2e": "playwright test --config playwright.config.ts",
     "test:unit": "vitest run --config vitest.config.ts",
     "test:coverage": "vitest run --coverage --config vitest.config.ts",
     "typecheck": "vue-tsc --noEmit"
@@ -16,8 +17,12 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "@types/node": "^25.3.0",
+    "@vitejs/plugin-vue": "^6.0.4",
+    "@vue/test-utils": "^2.4.6",
     "h3": "1.15.5",
+    "jsdom": "^28.1.0",
     "kysely": "^0.28.11",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18",
