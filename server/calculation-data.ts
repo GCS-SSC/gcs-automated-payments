@@ -136,7 +136,7 @@ export const savePaymentMetadata = async (
 }
 
 /** Resolves a selected budget fiscal year and month into a comparable period position. */
-const getSelectedPaymentPeriod = async (
+export const getSelectedPaymentPeriod = async (
   db: Db,
   agreementId: string,
   fiscalYearId: string,
@@ -155,8 +155,15 @@ const getSelectedPaymentPeriod = async (
     .where('Agency_Fiscal_Year._deleted', '=', false)
     .executeTakeFirst() as { fiscal_year_order?: unknown } | undefined
 
+  if (row?.fiscal_year_order === undefined || row.fiscal_year_order === null) {
+    throw createAutomatedPaymentUserError(
+      'GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_UNAVAILABLE',
+      'egcs_fc_fiscalyear'
+    )
+  }
+
   return {
-    fiscalYearOrder: Number(row?.fiscal_year_order ?? 0),
+    fiscalYearOrder: Number(row.fiscal_year_order),
     month: periodEnd
   }
 }

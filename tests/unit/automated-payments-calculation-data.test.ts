@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { readFile } from 'node:fs/promises'
-import { getAgreementHoldbackSettings } from '../../server/calculation-data'
+import { getAgreementHoldbackSettings, getSelectedPaymentPeriod } from '../../server/calculation-data'
 
 const calculationDataPath = new URL('../../server/calculation-data.ts', import.meta.url)
 
@@ -24,6 +24,15 @@ const createQuery = (row: Record<string, unknown> | undefined) => {
 }
 
 describe('automated payment calculation data', () => {
+  it('rejects a fiscal year outside the agreement current budget instead of calculating against year zero', async () => {
+    const db = createQuery(undefined)
+
+    await expect(getSelectedPaymentPeriod(db as never, 'agreement-1', 'other-fy', 3)).rejects.toMatchObject({
+      code: 'GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_UNAVAILABLE',
+      details: [expect.objectContaining({ path: 'egcs_fc_fiscalyear' })]
+    })
+  })
+
   it('scopes stable fiscal-year joins to the current agreement budget version', async () => {
     const source = await readFile(calculationDataPath, 'utf8')
     const queries = [

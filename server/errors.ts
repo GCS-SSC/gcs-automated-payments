@@ -11,6 +11,7 @@ type AutomatedPaymentErrorCode =
   | 'GCS_AUTOMATED_PAYMENTS_INVALID_CALCULATION_INPUT'
   | 'GCS_AUTOMATED_PAYMENTS_COMMITMENT_TYPE_REQUIRED'
   | 'GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_REQUIRED'
+  | 'GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_UNAVAILABLE'
   | 'GCS_AUTOMATED_PAYMENTS_PAYMENT_TYPE_REQUIRED'
   | 'GCS_AUTOMATED_PAYMENTS_PERIOD_START_INVALID'
   | 'GCS_AUTOMATED_PAYMENTS_PERIOD_END_INVALID'
@@ -37,6 +38,10 @@ const automatedPaymentErrorMessages: Record<AutomatedPaymentErrorCode, GcsExtens
   GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_REQUIRED: {
     en: 'Select a fiscal year before calculating the automated payment.',
     fr: 'Selectionnez un exercice financier avant de calculer le paiement automatise.'
+  },
+  GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_UNAVAILABLE: {
+    en: 'The selected fiscal year is not available for this agreement.',
+    fr: 'L exercice financier selectionne n est pas disponible pour cette entente.'
   },
   GCS_AUTOMATED_PAYMENTS_PAYMENT_TYPE_REQUIRED: {
     en: 'Select a payment type before calculating the automated payment.',
