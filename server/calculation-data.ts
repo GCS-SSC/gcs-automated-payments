@@ -45,8 +45,16 @@ type AmountPeriodRow = PeriodPosition & {
 }
 
 const PAYMENT_METADATA_KEY = 'payment-metadata'
-const TERMINAL_CLAIM_RECONCILE_STATUSES = ['complete', 'approved'] as const
-const NON_DENIED_PAYMENT_STATUSES = ['draft', 'inprogress', 'complete', 'pendingapproval', 'approved', 'pay', 'wait', 'processed', 'paid'] as const
+const NEGATIVE_WORKFLOW_STATES = ['unsuccessful', 'denied', 'failed', 'cancelled'] as const
+
+/** Serializes ceiling-affecting payment mutations for one Agreement. */
+export const lockAutomatedPaymentAgreement = async (db: Db, agreementId: string): Promise<void> => {
+  await sql`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(${'gcs-automated-payments:agreement:' + agreementId}, 0)
+    )
+  `.execute(db)
+}
 
 const isOnOrBefore = (row: PeriodPosition, position: PeriodPosition): boolean =>
   row.fiscalYearOrder < position.fiscalYearOrder
@@ -135,6 +143,27 @@ export const savePaymentMetadata = async (
     .execute()
 }
 
+/** Loads the persisted holdback-release choices used by update validation. */
+export const getPaymentMetadata = async (
+  db: Db,
+  paymentId: string
+): Promise<{ releaseHoldback: boolean, holdbackReleaseAmount: number }> => {
+  const row = await db
+    .selectFrom('extensions.kv_entry')
+    .select('value')
+    .where('extension_key', '=', EXTENSION_KEY)
+    .where('owner_type', '=', 'fundingcasepayment')
+    .where('owner_id', '=', paymentId)
+    .where('config_key', '=', PAYMENT_METADATA_KEY)
+    .where('_deleted', '=', false)
+    .executeTakeFirst() as { value?: unknown } | undefined
+  const value = parseAutomatedPaymentExtensionPayload(row?.value)
+  return {
+    releaseHoldback: value.releaseHoldback,
+    holdbackReleaseAmount: value.holdbackReleaseAmount
+  }
+}
+
 /** Resolves a selected budget fiscal year and month into a comparable period position. */
 export const getSelectedPaymentPeriod = async (
   db: Db,
@@ -193,7 +222,29 @@ const getClaimRows = async (db: Db, agreementId: string): Promise<AmountPeriodRo
       'Agency_Fiscal_Year.egcs_ay_fiscalyear as fiscal_year_order'
     ])
     .where('Funding_Case_Agreement_Claim.egcs_fc_fundingagreement', '=', agreementId)
-    .where('Funding_Case_Agreement_Claim_Reconcile.egcs_fc_status', 'in', TERMINAL_CLAIM_RECONCILE_STATUSES)
+    .where(sql<boolean>`EXISTS (
+      SELECT 1
+      FROM "Common_Completion" completion
+      LEFT JOIN "Common_Workflow_Run" workflow
+        ON workflow.egcs_cn_completion = completion.id
+      LEFT JOIN "Common_Runtime" runtime
+        ON runtime.id = workflow.id
+       AND runtime._deleted = false
+      WHERE completion.egcs_cn_entitytype = 'fundingclaimreconcile'
+        AND completion.egcs_cn_entityid = "Funding_Case_Agreement_Claim_Reconcile".id
+        AND completion._deleted = false
+        AND (
+          completion.egcs_cn_disposition = 'no_workflow'
+          OR runtime.egcs_cn_state IN ('succeeded', 'approved')
+        )
+        AND (runtime.id IS NULL OR runtime.egcs_cn_attempt = (
+          SELECT MAX(latest.egcs_cn_attempt)
+          FROM "Common_Workflow_Run" latest_run
+          JOIN "Common_Runtime" latest ON latest.id = latest_run.id
+          WHERE latest_run.egcs_cn_completion = completion.id
+            AND latest._deleted = false
+        ))
+    )`)
     .where('Funding_Case_Agreement_Claim._deleted', '=', false)
     .where('Funding_Case_Agreement_Claim_Reconcile._deleted', '=', false)
     .where('Funding_Case_Agreement_Claim_Reconcile_Line_Item._deleted', '=', false)
@@ -284,7 +335,26 @@ const getPaymentRows = async (db: Db, agreementId: string, excludePaymentId?: st
       'Agency_Fiscal_Year.egcs_ay_fiscalyear as fiscal_year_order'
     ])
     .where('Funding_Case_Agreement_Commitment.egcs_fc_fundingagreement', '=', agreementId)
-    .where('Funding_Case_Agreement_Payment.egcs_fc_status', 'in', NON_DENIED_PAYMENT_STATUSES)
+    .where(sql<boolean>`NOT EXISTS (
+      SELECT 1
+      FROM "Common_Completion" completion
+      JOIN "Common_Workflow_Run" workflow
+        ON workflow.egcs_cn_completion = completion.id
+      JOIN "Common_Runtime" runtime
+        ON runtime.id = workflow.id
+       AND runtime._deleted = false
+      WHERE completion.egcs_cn_entitytype = 'fundingcasepayment'
+        AND completion.egcs_cn_entityid = "Funding_Case_Agreement_Payment".id
+        AND completion._deleted = false
+        AND runtime.egcs_cn_attempt = (
+          SELECT MAX(latest.egcs_cn_attempt)
+          FROM "Common_Workflow_Run" latest_run
+          JOIN "Common_Runtime" latest ON latest.id = latest_run.id
+          WHERE latest_run.egcs_cn_completion = completion.id
+            AND latest._deleted = false
+        )
+        AND runtime.egcs_cn_state IN (${sql.join(NEGATIVE_WORKFLOW_STATES.map(state => sql.lit(state)))})
+    )`)
     .where('Funding_Case_Agreement_Payment._deleted', '=', false)
     .where('Funding_Case_Agreement_Commitment._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
@@ -352,14 +422,14 @@ const getCommitmentRemaining = async (
       'Funding_Case_Agreement_Commitment_Line.egcs_fc_commitment'
     )
     .innerJoin(
-      'Transfer_Payment_Stream_Commitment',
-      'Transfer_Payment_Stream_Commitment.id',
-      'Funding_Case_Agreement_Commitment_Line.egcs_fc_transferpaymentstreamcommitment'
+      'Transfer_Payment_Stream_Chart_of_Account',
+      'Transfer_Payment_Stream_Chart_of_Account.id',
+      'Funding_Case_Agreement_Commitment_Line.egcs_fc_transferpaymentstreamchartofaccount'
     )
     .innerJoin(
       'Transfer_Payment_Stream_Budget',
       'Transfer_Payment_Stream_Budget.id',
-      'Transfer_Payment_Stream_Commitment.egcs_tp_streambudget'
+      'Transfer_Payment_Stream_Chart_of_Account.egcs_tp_streambudget'
     )
     .innerJoin(
       'Transfer_Payment_Fiscal_Year_Budget',
@@ -379,11 +449,10 @@ const getCommitmentRemaining = async (
     .where('Funding_Case_Agreement_Commitment.egcs_fc_fundingagreement', '=', agreementId)
     .where('Funding_Case_Agreement_Commitment.egcs_fc_type', '=', commitmentType)
     .where('Funding_Case_Agreement_Commitment.egcs_fc_active', '=', true)
-    .where('Funding_Case_Agreement_Commitment.egcs_fc_status', '=', 'approved')
     .where(stableBudgetFiscalYearId, '=', fiscalYearId)
     .where('Funding_Case_Agreement_Commitment._deleted', '=', false)
     .where('Funding_Case_Agreement_Commitment_Line._deleted', '=', false)
-    .where('Transfer_Payment_Stream_Commitment._deleted', '=', false)
+    .where('Transfer_Payment_Stream_Chart_of_Account._deleted', '=', false)
     .where('Transfer_Payment_Stream_Budget._deleted', '=', false)
     .where('Transfer_Payment_Fiscal_Year_Budget._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
@@ -410,7 +479,26 @@ const getCommitmentRemaining = async (
     )
     .select('Funding_Case_Agreement_Payment_Line.egcs_fc_amount as amount')
     .where('Funding_Case_Agreement_Payment_Line.egcs_fc_fundingagreementcommitmentline', 'in', lineIds)
-    .where('Funding_Case_Agreement_Payment.egcs_fc_status', 'in', NON_DENIED_PAYMENT_STATUSES)
+    .where(sql<boolean>`NOT EXISTS (
+      SELECT 1
+      FROM "Common_Completion" completion
+      JOIN "Common_Workflow_Run" workflow
+        ON workflow.egcs_cn_completion = completion.id
+      JOIN "Common_Runtime" runtime
+        ON runtime.id = workflow.id
+       AND runtime._deleted = false
+      WHERE completion.egcs_cn_entitytype = 'fundingcasepayment'
+        AND completion.egcs_cn_entityid = "Funding_Case_Agreement_Payment".id
+        AND completion._deleted = false
+        AND runtime.egcs_cn_attempt = (
+          SELECT MAX(latest.egcs_cn_attempt)
+          FROM "Common_Workflow_Run" latest_run
+          JOIN "Common_Runtime" latest ON latest.id = latest_run.id
+          WHERE latest_run.egcs_cn_completion = completion.id
+            AND latest._deleted = false
+        )
+        AND runtime.egcs_cn_state IN (${sql.join(NEGATIVE_WORKFLOW_STATES.map(state => sql.lit(state)))})
+    )`)
     .where('Funding_Case_Agreement_Payment_Line._deleted', '=', false)
     .where('Funding_Case_Agreement_Payment._deleted', '=', false)
     .execute() as Array<{ amount?: unknown }>
@@ -432,6 +520,11 @@ const getBudgetTotals = async (
       'Funding_Case_Agreement_Budget_Line_Item.egcs_fc_fundingagreementbudgetfiscalyear'
     )
     .innerJoin('Agency_Fiscal_Year', 'Agency_Fiscal_Year.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear')
+    .innerJoin(
+      'Funding_Case_Agreement_Budget_Version',
+      'Funding_Case_Agreement_Budget_Version.id',
+      'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_budgetversion'
+    )
     .select([
       'Funding_Case_Agreement_Budget_Line_Item.egcs_fc_programfunding as amount',
       'Agency_Fiscal_Year.egcs_ay_fiscalyear as fiscal_year_order'
@@ -439,6 +532,8 @@ const getBudgetTotals = async (
     .where('Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fundingagreement', '=', agreementId)
     .where('Funding_Case_Agreement_Budget_Line_Item._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
+    .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
+    .where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)
     .where('Agency_Fiscal_Year._deleted', '=', false)
     .execute() as Array<{ amount?: unknown, fiscal_year_order?: unknown }>
 

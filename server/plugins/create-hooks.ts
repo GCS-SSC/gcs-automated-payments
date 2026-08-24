@@ -1,5 +1,6 @@
 import {
   defineGcsExtensionNitroPlugin,
+  registerGcsExtensionAgreementPaymentMutationGuard,
   registerGcsExtensionCreateOperationHandler
 } from '@gcs-ssc/extensions/server'
 import type { Transaction } from 'kysely'
@@ -11,6 +12,8 @@ import {
 } from '../../shared/automated-payments'
 import {
   calculateAutomatedPaymentFromDb,
+  getPaymentMetadata,
+  lockAutomatedPaymentAgreement,
   savePaymentMetadata
 } from '../calculation-data'
 import { createAutomatedPaymentUserError } from '../errors'
@@ -59,6 +62,10 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
     }
 
     const extensionPayload = parseAutomatedPaymentExtensionPayload(parsed.data.extensions?.[EXTENSION_KEY])
+    await lockAutomatedPaymentAgreement(
+      context.trx as Parameters<typeof lockAutomatedPaymentAgreement>[0],
+      context.agreementId
+    )
 
     if (context.createdRecord) {
       const calculation = await calculateAutomatedPaymentFromDb(
@@ -117,4 +124,73 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
 
     return { status: 'continue' }
   }, nitroApp as Parameters<typeof registerGcsExtensionCreateOperationHandler>[3])
+
+  registerGcsExtensionAgreementPaymentMutationGuard(EXTENSION_KEY, async context => {
+    if (context.operation !== 'payment.update') return
+    const db = context.db as Transaction<Record<string, Record<string, unknown>>>
+    await lockAutomatedPaymentAgreement(db, context.agreementId)
+    const payment = await db
+      .selectFrom('Funding_Case_Agreement_Payment')
+      .innerJoin(
+        'Funding_Case_Agreement_Commitment',
+        'Funding_Case_Agreement_Commitment.id',
+        'Funding_Case_Agreement_Payment.egcs_fc_fundingagreementcommitment'
+      )
+      .select([
+        'Funding_Case_Agreement_Payment.egcs_fc_fiscalyear',
+        'Funding_Case_Agreement_Payment.egcs_fc_paymenttype',
+        'Funding_Case_Agreement_Payment.egcs_fc_periodend',
+        'Funding_Case_Agreement_Payment.egcs_fc_paymentamount',
+        'Funding_Case_Agreement_Payment.egcs_fc_fundingagreementcommitment'
+      ])
+      .where('Funding_Case_Agreement_Payment.id', '=', context.paymentId)
+      .where('Funding_Case_Agreement_Payment._deleted', '=', false)
+      .where('Funding_Case_Agreement_Commitment._deleted', '=', false)
+      .forUpdate('Funding_Case_Agreement_Payment')
+      .executeTakeFirst() as Record<string, unknown> | undefined
+    if (!payment) return
+
+    const changes = context.changes ?? {}
+    const nextCommitmentId = String(
+      changes.egcs_fc_fundingagreementcommitment
+      ?? payment.egcs_fc_fundingagreementcommitment
+    )
+    const nextCommitment = await db
+      .selectFrom('Funding_Case_Agreement_Commitment')
+      .select([
+        'egcs_fc_type as commitment_type',
+        'egcs_fc_transferpaymentstream as stream_id'
+      ])
+      .where('id', '=', nextCommitmentId)
+      .where('egcs_fc_fundingagreement', '=', context.agreementId)
+      .where('_deleted', '=', false)
+      .executeTakeFirst() as { commitment_type?: unknown, stream_id?: unknown } | undefined
+    if (!nextCommitment) return
+
+    const streamConfig = await db
+      .selectFrom('extensions.stream_configuration')
+      .select('config')
+      .where('stream_id', '=', String(nextCommitment.stream_id))
+      .where('extension_key', '=', EXTENSION_KEY)
+      .where('enabled', '=', true)
+      .where('_deleted', '=', false)
+      .executeTakeFirst() as { config?: unknown } | undefined
+    if (!streamConfig) return
+
+    const metadata = await getPaymentMetadata(db, context.paymentId)
+    const calculation = await calculateAutomatedPaymentFromDb(db, {
+      agreementId: context.agreementId,
+      commitmentType: String(nextCommitment.commitment_type),
+      fiscalYearId: String(changes.egcs_fc_fiscalyear ?? payment.egcs_fc_fiscalyear),
+      paymentType: String(changes.egcs_fc_paymenttype ?? payment.egcs_fc_paymenttype) as 'reimbursement' | 'advance',
+      periodEnd: Number(changes.egcs_fc_periodend ?? payment.egcs_fc_periodend),
+      submittedAmount: Number(changes.egcs_fc_paymentamount ?? payment.egcs_fc_paymentamount),
+      releaseHoldback: metadata.releaseHoldback,
+      holdbackReleaseAmount: metadata.holdbackReleaseAmount,
+      excludePaymentId: context.paymentId
+    }, streamConfig.config)
+    if (calculation.enabled && Number(changes.egcs_fc_paymentamount ?? payment.egcs_fc_paymentamount) > calculation.ceilingAmount) {
+      throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING', 'egcs_fc_paymentamount')
+    }
+  }, nitroApp as Parameters<typeof registerGcsExtensionAgreementPaymentMutationGuard>[2])
 })

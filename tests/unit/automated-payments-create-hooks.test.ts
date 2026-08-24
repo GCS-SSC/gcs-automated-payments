@@ -1,20 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const registerGcsExtensionCreateOperationHandlerMock = vi.fn()
+const registerGcsExtensionAgreementPaymentMutationGuardMock = vi.fn()
 const lifecycleHookMock = vi.fn()
 const calculateAutomatedPaymentFromDbMock = vi.fn()
 const savePaymentMetadataMock = vi.fn()
+const getPaymentMetadataMock = vi.fn()
+const lockAutomatedPaymentAgreementMock = vi.fn()
 const guardAutomatedPaymentsActivationMock = vi.fn()
 
 vi.mock('@gcs-ssc/extensions/server', () => ({
   createGcsExtensionUserError: (options: Record<string, unknown>) => Object.assign(new Error(String(options.message)), options),
   defineGcsExtensionNitroPlugin: (plugin: unknown) => plugin,
+  registerGcsExtensionAgreementPaymentMutationGuard: (...args: unknown[]) =>
+    registerGcsExtensionAgreementPaymentMutationGuardMock(...args),
   registerGcsExtensionCreateOperationHandler: (...args: unknown[]) =>
     registerGcsExtensionCreateOperationHandlerMock(...args)
 }))
 
 vi.mock('../../server/calculation-data', () => ({
   calculateAutomatedPaymentFromDb: (...args: unknown[]) => calculateAutomatedPaymentFromDbMock(...args),
+  getPaymentMetadata: (...args: unknown[]) => getPaymentMetadataMock(...args),
+  lockAutomatedPaymentAgreement: (...args: unknown[]) => lockAutomatedPaymentAgreementMock(...args),
   savePaymentMetadata: (...args: unknown[]) => savePaymentMetadataMock(...args)
 }))
 
@@ -53,6 +60,7 @@ describe('gcs automated payments create hooks', () => {
       ceilingAmount: 100,
       holdbackReleaseAmount: 8
     })
+    getPaymentMetadataMock.mockResolvedValue({ releaseHoldback: true, holdbackReleaseAmount: 12 })
   })
 
   it('registers the extension activation guard hook', async () => {
@@ -162,5 +170,52 @@ describe('gcs automated payments create hooks', () => {
       releaseHoldback: true,
       holdbackReleaseAmount: 8
     })
+  })
+
+  it('validates updates against the selected commitment and persisted holdback metadata', async () => {
+    await loadHandler()
+    const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as
+      (context: Record<string, unknown>) => Promise<void>
+    const responses = [
+      {
+        egcs_fc_fiscalyear: 'fy-1',
+        egcs_fc_paymenttype: 'advance',
+        egcs_fc_periodend: 3,
+        egcs_fc_paymentamount: 40,
+        egcs_fc_fundingagreementcommitment: 'commitment-1'
+      },
+      { commitment_type: 'type-2', stream_id: 'stream-2' },
+      { config: { enabledPaymentTypes: ['advance'] } }
+    ]
+    const query = new Proxy({}, {
+      get: (_target, property) => property === 'executeTakeFirst'
+        ? async () => responses.shift()
+        : () => query
+    })
+    const db = { selectFrom: () => query }
+    calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({
+      enabled: true,
+      ceilingAmount: 50,
+      holdbackReleaseAmount: 12
+    })
+
+    await expect(guard({
+      operation: 'payment.update',
+      db,
+      agreementId: 'agreement-1',
+      paymentId: 'payment-1',
+      changes: {
+        egcs_fc_fundingagreementcommitment: 'commitment-2',
+        egcs_fc_paymentamount: 60
+      }
+    })).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING' })
+    expect(getPaymentMetadataMock).toHaveBeenCalledWith(db, 'payment-1')
+    expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(db, expect.objectContaining({
+      commitmentType: 'type-2',
+      releaseHoldback: true,
+      holdbackReleaseAmount: 12,
+      submittedAmount: 60,
+      excludePaymentId: 'payment-1'
+    }), { enabledPaymentTypes: ['advance'] })
   })
 })

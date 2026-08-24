@@ -10,6 +10,7 @@ export default defineGcsExtension({
     'server-handler-rbac',
     'extension-ui',
     'extension-api-client',
+    'extension-kv',
     'extension-create-operation-hooks',
     'extension-lifecycle-hooks'
   ],
