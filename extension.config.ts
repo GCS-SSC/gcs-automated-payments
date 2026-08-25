@@ -2,7 +2,7 @@ import { defineGcsExtension } from '@gcs-ssc/extensions'
 
 export default defineGcsExtension({
   key: 'gcs-automated-payments',
-  sdkVersion: '^0.1.0',
+  sdkVersion: '^0.2.0',
   requiredHostCapabilities: [
     'stream-config-modal',
     'payment-amount-calculators',
