@@ -1,4 +1,8 @@
+import { existsSync } from 'node:fs'
 import { defineConfig } from '@playwright/test'
+
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_PATH
+  || ['/usr/bin/chromium', '/usr/bin/chromium-browser'].find(path => existsSync(path))
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -8,8 +12,8 @@ export default defineConfig({
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000',
     browserName: 'chromium',
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined,
-    channel: process.env.PLAYWRIGHT_CHANNEL || 'chrome',
+    executablePath: chromiumExecutablePath,
+    channel: chromiumExecutablePath ? undefined : process.env.PLAYWRIGHT_CHANNEL || 'chrome',
     headless: true,
     trace: 'off',
     video: 'off',

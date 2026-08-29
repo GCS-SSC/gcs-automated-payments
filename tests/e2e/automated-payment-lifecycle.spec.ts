@@ -85,11 +85,17 @@ type PaymentCalculationPayload = {
   details: Array<{ label: string, value: number }>
 }
 
-const AGREEMENT_ID = '51'
-const AGENCY_ID = '1'
-const STREAM_ID = '31'
 const AUTOMATED_PAYMENTS_EXTENSION_KEY = 'gcs-automated-payments'
 const OUTCOME_ALLOCATION_EXTENSION_KEY = 'gcs-outcome-cost-allocation'
+
+type ManagedAgreementTarget = {
+  agencyId: string
+  agreementId: string
+  programId: string
+  streamId: string
+}
+
+let target: ManagedAgreementTarget
 
 const roundCurrency = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100
 
@@ -163,7 +169,7 @@ const calculateAdvance = async (
   paymentAmount = 0
 ) => {
   const response = await page.request.post(
-    `/api/extensions/${AUTOMATED_PAYMENTS_EXTENSION_KEY}/agreements/${AGREEMENT_ID}/calculate-payment`,
+    `/api/extensions/${AUTOMATED_PAYMENTS_EXTENSION_KEY}/agreements/${target.agreementId}/calculate-payment`,
     {
       data: {
         egcs_fc_commitmenttype: commitmentType,
@@ -191,7 +197,7 @@ const ensureStreamHoldbackBasis = async (
   code: string
 ): Promise<IdRow> => {
   const streamBasesResponse = await page.request.get(
-    `/api/transfer-payments/${programId}/streams/${STREAM_ID}/holdback-bases?page=1&limit=100`
+    `/api/transfer-payments/${programId}/streams/${target.streamId}/holdback-bases?page=1&limit=100`
   )
   await expectOk(streamBasesResponse, 'List stream holdback bases')
   const streamBases = await responseJson<{
@@ -200,7 +206,7 @@ const ensureStreamHoldbackBasis = async (
   const existing = streamBases.items.find(item => item.egcs_ay_languageindependentcode === code)
   if (existing) return existing
 
-  const agencyBasesResponse = await page.request.get(`/api/agency/${AGENCY_ID}/holdback-bases?page=1&limit=100`)
+  const agencyBasesResponse = await page.request.get(`/api/agency/${target.agencyId}/holdback-bases?page=1&limit=100`)
   await expectOk(agencyBasesResponse, 'List agency holdback bases')
   const agencyBases = await responseJson<{
     items: Array<IdRow & {
@@ -213,7 +219,7 @@ const ensureStreamHoldbackBasis = async (
   if (!agencyBasis) throw new Error(`Agency holdback basis ${code} is unavailable.`)
 
   const createResponse = await page.request.post(
-    `/api/transfer-payments/${programId}/streams/${STREAM_ID}/holdback-bases`,
+    `/api/transfer-payments/${programId}/streams/${target.streamId}/holdback-bases`,
     {
       data: {
         egcs_tp_agencyholdback: String(agencyBasis.id),
@@ -230,7 +236,7 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   const statusesResponse = await page.request.get('/api/statuses')
   await expectOk(statusesResponse, 'List lifecycle statuses')
   const statuses = (await responseJson<StatusRow[]>(statusesResponse))
-    .filter(status => status.agencyId === AGENCY_ID)
+    .filter(status => status.agencyId === target.agencyId)
   const draft = statuses.find(status => status.isDraft)
   const pending = statuses.find(status => status.nameEn === 'Pending Approval')
   const approved = statuses.find(status => status.nameEn === 'Approved')
@@ -240,7 +246,7 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   }
 
   const existingResponse = await page.request.get(
-    `/api/transfer-payments/${programId}/streams/${STREAM_ID}/workflow-setups?page=1&limit=100`
+    `/api/transfer-payments/${programId}/streams/${target.streamId}/workflow-setups?page=1&limit=100`
   )
   await expectOk(existingResponse, 'List allocation Workflows')
   const existing = await responseJson<{ items: Array<{ id: string | number, egcs_cn_entitytype: string, publicationState: string }> }>(existingResponse)
@@ -250,17 +256,17 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   )) return
 
   const templatesResponse = await page.request.get(
-    `/api/approval-templates?scopeType=transferpaymentstream&scopeId=${STREAM_ID}&page=1&limit=100`
+    `/api/approval-templates?scopeType=transferpaymentstream&scopeId=${target.streamId}&page=1&limit=100`
   )
   await expectOk(templatesResponse, 'List Approval Templates')
   const templates = await responseJson<{ items: Array<{ id: string | number, publicationState: string }> }>(templatesResponse)
   const template = templates.items.find(item => item.publicationState === 'published')
   if (!template) throw new Error('A published stream Approval Template is required.')
 
-  const createResponse = await page.request.post(`/api/transfer-payments/${programId}/streams/${STREAM_ID}/workflow-setups`, {
+  const createResponse = await page.request.post(`/api/transfer-payments/${programId}/streams/${target.streamId}/workflow-setups`, {
     data: {
       egcs_cn_scopetype: 'transferpaymentstream',
-      egcs_cn_scopeid: STREAM_ID,
+      egcs_cn_scopeid: target.streamId,
       egcs_cn_entitytype: `${OUTCOME_ALLOCATION_EXTENSION_KEY}:allocation-version`,
       egcs_cn_name_en: 'Outcome allocation approval',
       egcs_cn_name_fr: 'Approbation de la repartition des resultats',
@@ -278,7 +284,7 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   const workflowId = String(workflow.id)
 
   const memberResponse = await page.request.post(
-    `/api/transfer-payments/${programId}/streams/${STREAM_ID}/workflow-setups/${workflowId}/members`,
+    `/api/transfer-payments/${programId}/streams/${target.streamId}/workflow-setups/${workflowId}/members`,
     {
       data: {
         egcs_cn_sequence: 1,
@@ -294,16 +300,75 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   )
   await expectOk(memberResponse, 'Add allocation Approval member')
   const publishResponse = await page.request.post(
-    `/api/transfer-payments/${programId}/streams/${STREAM_ID}/workflow-setups/${workflowId}/publish`
+    `/api/transfer-payments/${programId}/streams/${target.streamId}/workflow-setups/${workflowId}/publish`
   )
   await expectOk(publishResponse, 'Publish allocation Workflow')
 }
 
-test.describe('Automated payment lifecycle', () => {
+test.describe.serial('Automated payment lifecycle', () => {
+  test.beforeAll(async ({ browser }) => {
+    const page = await browser.newPage()
+    try {
+      await login(page, 'root@example.com', 'password123')
+      const agreementsResponse = await page.request.get(
+        '/api/agreements?page=1&limit=10&search=Health%20Canada%20Cost%20Agreement%201%20-%20Showcase'
+      )
+      await expectOk(agreementsResponse, 'Discover the managed automated-payment agreement')
+      const agreements = await responseJson<{
+        items: Array<{
+          id: string | number
+          egcs_fc_title_en: string
+        }>
+      }>(agreementsResponse)
+      const matches = agreements.items.filter(item =>
+        item.egcs_fc_title_en === 'Health Canada Cost Agreement 1 - Showcase')
+      if (matches.length !== 1) {
+        throw new Error(`Expected one managed automated-payment agreement, found ${matches.length}.`)
+      }
+      const agreementId = String(matches[0]!.id)
+      const detailResponse = await page.request.get(`/api/agreements/${agreementId}`)
+      await expectOk(detailResponse, 'Resolve the managed automated-payment agreement ownership')
+      const detail = await responseJson<{
+        agency_id: string | number
+        egcs_fc_transferpaymentstream: string | number
+        program_id: string | number
+      }>(detailResponse)
+      target = {
+        agencyId: String(detail.agency_id),
+        agreementId,
+        programId: String(detail.program_id),
+        streamId: String(detail.egcs_fc_transferpaymentstream)
+      }
+    } finally {
+      await page.close()
+    }
+  })
+  test('keeps calculator UI and server handler unavailable while disabled', async ({ page }) => {
+    await login(page, 'root@example.com', 'password123')
+
+    const disableAgencyResponse = await page.request.patch(`/api/extensions/agency/${target.agencyId}`, {
+      data: { extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: false }
+    })
+    await expectOk(disableAgencyResponse, 'Disable automated payments for agency')
+
+    const disabledHandlerResponse = await page.request.post(
+      `/api/extensions/${AUTOMATED_PAYMENTS_EXTENSION_KEY}/agreements/${target.agreementId}/calculate-payment`,
+      { data: {} }
+    )
+    expect([403, 404]).toContain(disabledHandlerResponse.status())
+
+    await page.goto(`/en/agreements/${target.agreementId}`)
+    await page.getByRole('tab', { name: 'Payments' }).click()
+    await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
+    const paymentDialog = page.getByRole('dialog', { name: 'Add Payment' })
+    await expect(paymentDialog).toBeVisible()
+    await expect(paymentDialog.getByText('Automated payment ceiling', { exact: true })).toHaveCount(0)
+  })
+
   test('runs allocation, commitment, forecast, and automatically calculated advance payment', async ({ page, browser }) => {
     await login(page, 'root@example.com', 'password123')
 
-    const agreementResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}`)
+    const agreementResponse = await page.request.get(`/api/agreements/${target.agreementId}`)
     await expectOk(agreementResponse, 'Resolve automated-payment stream program')
     const agreement = await responseJson<{ program_id: string }>(agreementResponse)
 
@@ -311,37 +376,37 @@ test.describe('Automated payment lifecycle', () => {
     await expectOk(statusesResponse, 'Resolve draft payment status')
     const statusCatalog = await responseJson<StatusRow[]>(statusesResponse)
     const draftStatusIds = new Set(statusCatalog
-      .filter(status => status.agencyId === AGENCY_ID && status.isDraft)
+      .filter(status => status.agencyId === target.agencyId && status.isDraft)
       .map(status => String(status.id)))
     const draftStatusId = [...draftStatusIds][0]
     const approvedStatusId = statusCatalog
-      .find(status => status.agencyId === AGENCY_ID && status.nameEn === 'Approved')?.id
+      .find(status => status.agencyId === target.agencyId && status.nameEn === 'Approved')?.id
     const inProgressStatusId = statusCatalog
-      .find(status => status.agencyId === AGENCY_ID && status.nameEn === 'In Progress')?.id
+      .find(status => status.agencyId === target.agencyId && status.nameEn === 'In Progress')?.id
     if (!draftStatusId || !approvedStatusId || !inProgressStatusId) {
       throw new Error('Required seeded status identities are unavailable.')
     }
 
-    const seededPaymentsResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}/payments-overview`)
+    const seededPaymentsResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments-overview`)
     await expectOk(seededPaymentsResponse, 'Fetch seeded payments')
     const seededPayments = await responseJson<{ payments: Array<IdRow & { egcs_fc_status: string }> }>(seededPaymentsResponse)
     for (const payment of seededPayments.payments.filter(item => draftStatusIds.has(String(item.egcs_fc_status)))) {
-      const deleteResponse = await page.request.delete(`/api/agreements/${AGREEMENT_ID}/payments/${payment.id}`)
+      const deleteResponse = await page.request.delete(`/api/agreements/${target.agreementId}/payments/${payment.id}`)
       if (deleteResponse.status() !== 409) {
         await expectOk(deleteResponse, `Delete seeded draft payment ${payment.id}`)
       }
     }
 
-    const retainedPaymentsResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}/payments-overview`)
+    const retainedPaymentsResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments-overview`)
     await expectOk(retainedPaymentsResponse, 'Fetch retained seeded payments')
     const retainedPayments = await responseJson<{ payments: IdRow[] }>(retainedPaymentsResponse)
     const paidByYearAndChart = new Map<string, number>()
     for (const payment of retainedPayments.payments) {
-      const paymentResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}/payments/${payment.id}`)
+      const paymentResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments/${payment.id}`)
       await expectOk(paymentResponse, `Read seeded payment ${payment.id}`)
       const paymentDetail = await responseJson<PaymentCoverageDetail>(paymentResponse)
       const commitmentResponse = await page.request.get(
-        `/api/agreements/${AGREEMENT_ID}/commitments/${paymentDetail.egcs_fc_fundingagreementcommitment}`
+        `/api/agreements/${target.agreementId}/commitments/${paymentDetail.egcs_fc_fundingagreementcommitment}`
       )
       await expectOk(commitmentResponse, `Read seeded payment commitment ${paymentDetail.egcs_fc_fundingagreementcommitment}`)
       const commitmentDetail = await responseJson<CommitmentCoverageDetail>(commitmentResponse)
@@ -357,7 +422,7 @@ test.describe('Automated payment lifecycle', () => {
       }
     }
 
-    const enableResponse = await page.request.patch(`/api/extensions/agency/${AGENCY_ID}`, {
+    const enableResponse = await page.request.patch(`/api/extensions/agency/${target.agencyId}`, {
       data: {
         extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY,
         enabled: true
@@ -365,18 +430,18 @@ test.describe('Automated payment lifecycle', () => {
     })
     await expectOk(enableResponse, 'Enable automated payments for agency')
 
-    const allocationAgencyResponse = await page.request.patch(`/api/extensions/agency/${AGENCY_ID}`, {
+    const allocationAgencyResponse = await page.request.patch(`/api/extensions/agency/${target.agencyId}`, {
       data: { extensionKey: OUTCOME_ALLOCATION_EXTENSION_KEY, enabled: true }
     })
     await expectOk(allocationAgencyResponse, 'Enable outcome allocation for agency')
-    const allocationMigrationResponse = await page.request.post(`/api/extensions/agency/${AGENCY_ID}/migrations`, {
+    const allocationMigrationResponse = await page.request.post(`/api/extensions/agency/${target.agencyId}/migrations`, {
       data: { extensionKey: OUTCOME_ALLOCATION_EXTENSION_KEY }
     })
     await expectOk(allocationMigrationResponse, 'Apply outcome allocation migrations')
 
     await ensureStreamHoldbackBasis(page, agreement.program_id, 'final-fiscal-year')
 
-    const streamConfigResponse = await page.request.patch(`/api/extensions/streams/${STREAM_ID}`, {
+    const streamConfigResponse = await page.request.patch(`/api/extensions/streams/${target.streamId}`, {
       data: {
         extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY,
         enabled: true,
@@ -387,7 +452,7 @@ test.describe('Automated payment lifecycle', () => {
     })
     await expectOk(streamConfigResponse, 'Enable automated payments for stream')
 
-    const allocationEnableResponse = await page.request.patch(`/api/extensions/streams/${STREAM_ID}`, {
+    const allocationEnableResponse = await page.request.patch(`/api/extensions/streams/${target.streamId}`, {
       data: {
         extensionKey: OUTCOME_ALLOCATION_EXTENSION_KEY,
         enabled: true
@@ -396,7 +461,7 @@ test.describe('Automated payment lifecycle', () => {
     await expectOk(allocationEnableResponse, 'Enable outcome allocation for stream')
 
     const allocationResponse = await page.request.get(
-      `/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${AGREEMENT_ID}/allocations`
+      `/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`
     )
     await expectOk(allocationResponse, 'Fetch cost allocation inputs')
     const allocationPayload = await responseJson<AllocationPayload>(allocationResponse)
@@ -424,7 +489,7 @@ test.describe('Automated payment lifecycle', () => {
       }))
     })
 
-    const allocationConfigResponse = await page.request.patch(`/api/extensions/streams/${STREAM_ID}`, {
+    const allocationConfigResponse = await page.request.patch(`/api/extensions/streams/${target.streamId}`, {
       data: {
         extensionKey: OUTCOME_ALLOCATION_EXTENSION_KEY,
         enabled: true,
@@ -437,7 +502,7 @@ test.describe('Automated payment lifecycle', () => {
     await expectOk(allocationConfigResponse, 'Configure outcome allocation mappings')
 
     const draftVersionResponse = await page.request.post(
-      `/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${AGREEMENT_ID}/allocation-versions`
+      `/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocation-versions`
     )
     await expectOk(draftVersionResponse, 'Create allocation version')
     const draftVersionPayload = await responseJson<{ version: IdRow }>(draftVersionResponse)
@@ -460,7 +525,7 @@ test.describe('Automated payment lifecycle', () => {
     })
 
     const saveAllocationResponse = await page.request.put(
-      `/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${AGREEMENT_ID}/allocations`,
+      `/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`,
       {
         data: {
           allocationVersionId,
@@ -485,12 +550,12 @@ test.describe('Automated payment lifecycle', () => {
       allocationVersionId
     )
 
-    const commitmentsBeforeUiCreateResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}/commitments-overview`)
+    const commitmentsBeforeUiCreateResponse = await page.request.get(`/api/agreements/${target.agreementId}/commitments-overview`)
     await expectOk(commitmentsBeforeUiCreateResponse, 'List commitments before UI creation')
     const commitmentsBeforeUiCreate = await responseJson<{ commitments: IdRow[] }>(commitmentsBeforeUiCreateResponse)
     const existingCommitmentIds = new Set(commitmentsBeforeUiCreate.commitments.map(commitment => String(commitment.id)))
 
-    await page.goto(`/en/agreements/${AGREEMENT_ID}`)
+    await page.goto(`/en/agreements/${target.agreementId}`)
     await page.getByRole('tab', { name: 'Commitments' }).click()
     await page.getByRole('button', { name: 'Add commitment', exact: true }).click()
     const commitmentDialog = page.getByRole('dialog', { name: 'Add commitment' })
@@ -498,7 +563,7 @@ test.describe('Automated payment lifecycle', () => {
     await commitmentDialog.getByRole('button', { name: 'Add', exact: true }).click()
     await expect(commitmentDialog).toBeHidden()
 
-    const commitmentsAfterUiCreateResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}/commitments-overview`)
+    const commitmentsAfterUiCreateResponse = await page.request.get(`/api/agreements/${target.agreementId}/commitments-overview`)
     await expectOk(commitmentsAfterUiCreateResponse, 'List commitments after UI creation')
     const commitmentsAfterUiCreate = await responseJson<{
       commitments: Array<IdRow & { egcs_fc_status: string, egcs_fc_type: string | number }>
@@ -515,7 +580,7 @@ test.describe('Automated payment lifecycle', () => {
     await login(approvalPage, 'user11@example.com', 'password123')
     await approveAllSteps(approvalPage, 'fundingcaseagreementcommitment', commitmentId)
 
-    const approvedCommitmentResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}/commitments/${commitmentId}`)
+    const approvedCommitmentResponse = await page.request.get(`/api/agreements/${target.agreementId}/commitments/${commitmentId}`)
     await expectOk(approvedCommitmentResponse, 'Fetch approved generated commitment')
     const approvedCommitment = await responseJson<IdRow & {
       egcs_fc_status: string
@@ -526,7 +591,7 @@ test.describe('Automated payment lifecycle', () => {
     expect(approvedCommitment.egcs_fc_active).toBe(true)
     expect(approvedCommitment.lines.length).toBeGreaterThan(0)
 
-    const budgetResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}/budget-overview`)
+    const budgetResponse = await page.request.get(`/api/agreements/${target.agreementId}/budget-overview`)
     await expectOk(budgetResponse, 'Fetch agreement budget')
     const budgetPayload = await responseJson<{
       fiscalYears: Array<IdRow & { fiscal_year_display: string }>
@@ -556,7 +621,7 @@ test.describe('Automated payment lifecycle', () => {
     const forecastMonthlyAmount = roundCurrency(targetBudgetYear!.remaining / 3)
     expect(forecastMonthlyAmount).toBeGreaterThan(0)
 
-    const forecastResponse = await page.request.post(`/api/agreements/${AGREEMENT_ID}/forecasts`, {
+    const forecastResponse = await page.request.post(`/api/agreements/${target.agreementId}/forecasts`, {
       data: {
         egcs_fc_fiscalyear: fiscalYearId
       }
@@ -566,7 +631,7 @@ test.describe('Automated payment lifecycle', () => {
     const forecastId = String(forecast.id)
 
     for (const month of [0, 1, 2]) {
-      const lineResponse = await page.request.post(`/api/agreements/${AGREEMENT_ID}/forecast-line-items`, {
+      const lineResponse = await page.request.post(`/api/agreements/${target.agreementId}/forecast-line-items`, {
         data: {
           egcs_fc_agreementforecast: forecastId,
           egcs_fc_fundingagreementbudgetlineitem: budgetLineItemId,
@@ -596,12 +661,32 @@ test.describe('Automated payment lifecycle', () => {
     const initialAdvanceAmount = Math.min(initialAdvanceCalculation.suggestedAmount, commitmentBalance)
     expect(initialAdvanceAmount).toBeGreaterThan(0)
 
-    const paymentsBeforeUiCreateResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}/payments-overview`)
+    const paymentsBeforeUiCreateResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments-overview`)
     await expectOk(paymentsBeforeUiCreateResponse, 'List payments before UI creation')
     const paymentsBeforeUiCreate = await responseJson<{ payments: IdRow[] }>(paymentsBeforeUiCreateResponse)
     const existingPaymentIds = new Set(paymentsBeforeUiCreate.payments.map(payment => String(payment.id)))
 
-    await page.goto(`/en/agreements/${AGREEMENT_ID}`)
+    const aboveCeiling = await page.request.post(`/api/agreements/${target.agreementId}/payments`, { data: {
+      egcs_fc_commitmenttype: commitmentType,
+      egcs_fc_fiscalyear: fiscalYearId,
+      egcs_fc_paymenttype: 'advance',
+      egcs_fc_periodstart: 0,
+      egcs_fc_periodend: 2,
+      egcs_fc_paymentamount: roundCurrency(initialAdvanceCalculation.ceilingAmount + 0.01),
+      egcs_fc_currency: 'cad',
+      extensions: {
+        [AUTOMATED_PAYMENTS_EXTENSION_KEY]: { releaseHoldback: false, holdbackReleaseAmount: 0 }
+      }
+    } })
+    const aboveCeilingBody = await aboveCeiling.text()
+    expect(aboveCeiling.status(), aboveCeilingBody).toBe(400)
+    expect(aboveCeilingBody).toContain('GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING')
+    const paymentsAfterRejectedCreate = await responseJson<{ payments: IdRow[] }>(
+      await page.request.get(`/api/agreements/${target.agreementId}/payments-overview`)
+    )
+    expect(paymentsAfterRejectedCreate.payments.map(payment => String(payment.id))).toEqual([...existingPaymentIds])
+
+    await page.goto(`/en/agreements/${target.agreementId}`)
     await page.getByRole('tab', { name: 'Payments' }).click()
     await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
     const paymentDialog = page.getByRole('dialog', { name: 'Add Payment' })
@@ -628,13 +713,13 @@ test.describe('Automated payment lifecycle', () => {
     await paymentDialog.getByRole('button', { name: 'Add', exact: true }).click()
     await expect(paymentDialog).toBeHidden()
 
-    const paymentsAfterUiCreateResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}/payments-overview`)
+    const paymentsAfterUiCreateResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments-overview`)
     await expectOk(paymentsAfterUiCreateResponse, 'List payments after UI creation')
     const paymentsAfterUiCreate = await responseJson<{ payments: Array<IdRow & { egcs_fc_status: string }> }>(paymentsAfterUiCreateResponse)
     const advancePayment = paymentsAfterUiCreate.payments.find(payment => !existingPaymentIds.has(String(payment.id)))
     expect(advancePayment).toBeTruthy()
     const advancePaymentId = String(advancePayment!.id)
-    const advancePaymentDetailResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}/payments/${advancePaymentId}`)
+    const advancePaymentDetailResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments/${advancePaymentId}`)
     await expectOk(advancePaymentDetailResponse, 'Fetch generated advance payment')
     const advancePaymentDetail = await responseJson<IdRow & {
       egcs_fc_status: string
@@ -650,30 +735,60 @@ test.describe('Automated payment lifecycle', () => {
 
     await approvalPage.close()
 
-    await page.goto(`/en/agreements/${AGREEMENT_ID}`)
+    await page.goto(`/en/agreements/${target.agreementId}`)
     await page.getByRole('tab', { name: 'Payments' }).click()
     await expect(page.getByRole('link', { name: 'Advance' }).first()).toBeVisible()
+  })
+
+  test('enforces route identity, assignment, French mobile UI, and reload boundaries', async ({ page, browser }) => {
+    test.setTimeout(90_000)
+    await login(page, 'root@example.com', 'password123')
+
+    const malformedResponse = await page.request.post(
+      `/api/extensions/${AUTOMATED_PAYMENTS_EXTENSION_KEY}/agreements/not-a-number/calculate-payment`,
+      { data: {} }
+    )
+    expect([400, 404]).toContain(malformedResponse.status())
+
+    const unassignedPage = await browser.newPage()
+    await login(unassignedPage, 'user11@example.com', 'password123')
+    const forbiddenResponse = await unassignedPage.request.post(
+      `/api/extensions/${AUTOMATED_PAYMENTS_EXTENSION_KEY}/agreements/${target.agreementId}/calculate-payment`,
+      { data: {} }
+    )
+    expect(forbiddenResponse.status()).toBe(403)
+    await unassignedPage.close()
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto(`/fr/ententes/${target.agreementId}`)
+    await page.getByRole('button', { name: 'Basculer la navigation' }).click()
+    await page.getByRole('tab', { name: 'Paiements' }).last().click()
+    await page.getByRole('button', { name: 'Ajouter un paiement', exact: true }).click()
+    await expect(page.getByRole('dialog', { name: 'Ajouter un paiement' })
+      .getByText('Plafond du paiement automatise', { exact: true })).toBeVisible()
+    await page.reload()
+    await expect(page.getByRole('button', { name: 'Basculer la navigation' })).toBeVisible()
   })
 
   test('refuses stream activation with an actionable list of missing holdback basis codes', async ({ page }) => {
     await login(page, 'root@example.com', 'password123')
 
-    const enableAgencyResponse = await page.request.patch(`/api/extensions/agency/${AGENCY_ID}`, {
+    const enableAgencyResponse = await page.request.patch(`/api/extensions/agency/${target.agencyId}`, {
       data: { extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: true }
     })
     await expectOk(enableAgencyResponse, 'Enable automated payments for activation validation')
 
-    const disableStreamResponse = await page.request.patch(`/api/extensions/streams/${STREAM_ID}`, {
+    const disableStreamResponse = await page.request.patch(`/api/extensions/streams/${target.streamId}`, {
       data: { extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: false, config: {} }
     })
     await expectOk(disableStreamResponse, 'Disable automated payments before activation validation')
 
-    const agreementResponse = await page.request.get(`/api/agreements/${AGREEMENT_ID}`)
+    const agreementResponse = await page.request.get(`/api/agreements/${target.agreementId}`)
     await expectOk(agreementResponse, 'Resolve automated-payment stream program')
     const agreement = await responseJson<{ program_id: string }>(agreementResponse)
 
     const basesResponse = await page.request.get(
-      `/api/transfer-payments/${agreement.program_id}/streams/${STREAM_ID}/holdback-bases?page=1&limit=20`
+      `/api/transfer-payments/${agreement.program_id}/streams/${target.streamId}/holdback-bases?page=1&limit=20`
     )
     await expectOk(basesResponse, 'List stream holdback bases')
     const bases = await responseJson<{
@@ -686,11 +801,11 @@ test.describe('Automated payment lifecycle', () => {
       ?? await ensureStreamHoldbackBasis(page, agreement.program_id, 'final-fiscal-year')
 
     const deleteBasisResponse = await page.request.delete(
-      `/api/transfer-payments/${agreement.program_id}/streams/${STREAM_ID}/holdback-bases/${ensuredBasis.id}`
+      `/api/transfer-payments/${agreement.program_id}/streams/${target.streamId}/holdback-bases/${ensuredBasis.id}`
     )
     await expectOk(deleteBasisResponse, 'Delete required final-fiscal-year holdback basis')
 
-    const activationResponse = await page.request.patch(`/api/extensions/streams/${STREAM_ID}`, {
+    const activationResponse = await page.request.patch(`/api/extensions/streams/${target.streamId}`, {
       data: {
         extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY,
         enabled: true,

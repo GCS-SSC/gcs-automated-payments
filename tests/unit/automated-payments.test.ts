@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   AutomatedPaymentCalculateSchema,
+  AutomatedPaymentPositiveBigintIdSchema,
+  AutomatedPaymentUuidIdSchema,
   calculateAutomatedPaymentAmount,
   parseAutomatedPaymentExtensionPayload,
   roundCurrency,
@@ -12,6 +14,9 @@ const hostHoldbackSettings = {
   holdbackPercent: 10,
   holdbackBasis: 'agreement-total' as const
 }
+
+const validCommitmentTypeId = '9223372036854775807'
+const validFiscalYearId = '00000000-0000-4000-8000-000000000001'
 
 const baseInput: AutomatedPaymentCalculationInput = {
   paymentType: 'reimbursement',
@@ -180,8 +185,8 @@ describe('gcs automated payments calculation', () => {
 
   it('uses an extension-owned validation code for invalid period ranges', () => {
     const result = AutomatedPaymentCalculateSchema.safeParse({
-      egcs_fc_commitmenttype: 'commitment',
-      egcs_fc_fiscalyear: '1',
+      egcs_fc_commitmenttype: validCommitmentTypeId,
+      egcs_fc_fiscalyear: validFiscalYearId,
       egcs_fc_paymenttype: 'advance',
       egcs_fc_periodstart: 3,
       egcs_fc_periodend: 2,
@@ -195,8 +200,8 @@ describe('gcs automated payments calculation', () => {
 
   it('converts calculator validation issues into bilingual extension-owned user errors', () => {
     const result = AutomatedPaymentCalculateSchema.safeParse({
-      egcs_fc_commitmenttype: 'commitment',
-      egcs_fc_fiscalyear: '1',
+      egcs_fc_commitmenttype: validCommitmentTypeId,
+      egcs_fc_fiscalyear: validFiscalYearId,
       egcs_fc_paymenttype: 'advance',
       egcs_fc_periodstart: 3,
       egcs_fc_periodend: 2,
@@ -220,5 +225,48 @@ describe('gcs automated payments calculation', () => {
         fr: 'La periode de fin doit etre identique ou posterieure a la periode de debut.'
       }
     }])
+  })
+
+  it.each([
+    { name: 'the smallest string id', value: '1', expected: '1' },
+    { name: 'the signed-bigint maximum', value: validCommitmentTypeId, expected: validCommitmentTypeId },
+    { name: 'a safe numeric id', value: 42, expected: '42' },
+    { name: 'a bigint id', value: 42n, expected: '42' },
+    { name: 'a whitespace-padded id', value: ' 42 ', expected: '42' }
+  ])('accepts $name as a canonical positive bigint identifier', ({ value, expected }) => {
+    expect(AutomatedPaymentPositiveBigintIdSchema.parse(value)).toBe(expected)
+  })
+
+  it.each([
+    { name: 'missing', value: undefined },
+    { name: 'null', value: null },
+    { name: 'empty', value: '' },
+    { name: 'whitespace-only', value: '   ' },
+    { name: 'malformed', value: 'commitment-1' },
+    { name: 'zero text', value: '0' },
+    { name: 'numeric zero', value: 0 },
+    { name: 'negative', value: '-1' },
+    { name: 'leading-zero', value: '01' },
+    { name: 'decimal', value: '1.0' },
+    { name: 'signed-bigint overflow', value: '9223372036854775808' },
+    { name: 'unsafe numeric input', value: 9_223_372_036_854_776_000 },
+    { name: 'repeated values', value: ['1', '2'] }
+  ])('rejects $name positive-bigint input', ({ value }) => {
+    expect(AutomatedPaymentPositiveBigintIdSchema.safeParse(value).success).toBe(false)
+  })
+
+  it('accepts a canonical UUID identifier', () => {
+    expect(AutomatedPaymentUuidIdSchema.parse(validFiscalYearId)).toBe(validFiscalYearId)
+  })
+
+  it.each([
+    { name: 'missing', value: undefined },
+    { name: 'null', value: null },
+    { name: 'empty', value: '' },
+    { name: 'malformed', value: 'fy-1' },
+    { name: 'a bigint-shaped string', value: '1' },
+    { name: 'repeated values', value: [validFiscalYearId, validFiscalYearId] }
+  ])('rejects $name UUID input', ({ value }) => {
+    expect(AutomatedPaymentUuidIdSchema.safeParse(value).success).toBe(false)
   })
 })

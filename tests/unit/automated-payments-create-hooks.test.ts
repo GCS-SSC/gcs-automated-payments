@@ -8,6 +8,8 @@ const savePaymentMetadataMock = vi.fn()
 const getPaymentMetadataMock = vi.fn()
 const lockAutomatedPaymentAgreementMock = vi.fn()
 const guardAutomatedPaymentsActivationMock = vi.fn()
+const validCommitmentTypeId = '9223372036854775807'
+const validFiscalYearId = '00000000-0000-4000-8000-000000000001'
 
 vi.mock('@gcs-ssc/extensions/server', () => ({
   createGcsExtensionUserError: (options: Record<string, unknown>) => Object.assign(new Error(String(options.message)), options),
@@ -30,8 +32,8 @@ vi.mock('../../server/activation', () => ({
 }))
 
 const validBody = {
-  egcs_fc_commitmenttype: 'commitment-1',
-  egcs_fc_fiscalyear: 'fy-1',
+  egcs_fc_commitmenttype: validCommitmentTypeId,
+  egcs_fc_fiscalyear: validFiscalYearId,
   egcs_fc_paymenttype: 'advance',
   egcs_fc_periodstart: 1,
   egcs_fc_periodend: 3,
@@ -112,6 +114,32 @@ describe('gcs automated payments create hooks', () => {
     expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
   })
 
+  it.each([
+    { name: 'empty commitment type', field: 'egcs_fc_commitmenttype', value: '' },
+    { name: 'malformed commitment type', field: 'egcs_fc_commitmenttype', value: 'commitment-1' },
+    { name: 'zero commitment type', field: 'egcs_fc_commitmenttype', value: '0' },
+    { name: 'negative commitment type', field: 'egcs_fc_commitmenttype', value: '-1' },
+    { name: 'leading-zero commitment type', field: 'egcs_fc_commitmenttype', value: '01' },
+    { name: 'overflow commitment type', field: 'egcs_fc_commitmenttype', value: '9223372036854775808' },
+    { name: 'repeated commitment types', field: 'egcs_fc_commitmenttype', value: ['1', '2'] },
+    { name: 'empty fiscal year', field: 'egcs_fc_fiscalyear', value: '' },
+    { name: 'malformed fiscal year', field: 'egcs_fc_fiscalyear', value: 'fy-1' },
+    { name: 'repeated fiscal years', field: 'egcs_fc_fiscalyear', value: [validFiscalYearId, validFiscalYearId] }
+  ])('does not lock or query for $name in the create hook', async ({ field, value }) => {
+    const handler = await loadHandler()
+
+    await expect(handler({
+      phase: 'before-create',
+      validatedBody: { ...validBody, [field]: value },
+      trx: {},
+      agreementId: 'agreement-1',
+      config: {}
+    })).resolves.toEqual({ status: 'continue' })
+    expect(lockAutomatedPaymentAgreementMock).not.toHaveBeenCalled()
+    expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
+    expect(savePaymentMetadataMock).not.toHaveBeenCalled()
+  })
+
   it('validates before-create payment amounts against the calculated ceiling', async () => {
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({
       enabled: true,
@@ -132,6 +160,8 @@ describe('gcs automated payments create hooks', () => {
     })
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       agreementId: 'agreement-1',
+      commitmentType: validCommitmentTypeId,
+      fiscalYearId: validFiscalYearId,
       submittedAmount: 100,
       releaseHoldback: true,
       holdbackReleaseAmount: 10
@@ -170,6 +200,22 @@ describe('gcs automated payments create hooks', () => {
       releaseHoldback: true,
       holdbackReleaseAmount: 8
     })
+  })
+
+  it('propagates after-create calculation failures so the host transaction rolls back', async () => {
+    const failure = new Error('calculation provider failed')
+    calculateAutomatedPaymentFromDbMock.mockRejectedValueOnce(failure)
+    const handler = await loadHandler()
+
+    await expect(handler({
+      phase: 'after-create',
+      validatedBody: validBody,
+      trx: {},
+      agreementId: 'agreement-1',
+      createdRecord: { id: 'payment-1' },
+      config: {}
+    })).rejects.toBe(failure)
+    expect(savePaymentMetadataMock).not.toHaveBeenCalled()
   })
 
   it('validates updates against the selected commitment and persisted holdback metadata', async () => {
@@ -217,5 +263,78 @@ describe('gcs automated payments create hooks', () => {
       submittedAmount: 60,
       excludePaymentId: 'payment-1'
     }), { enabledPaymentTypes: ['advance'] })
+  })
+
+  it.each([
+    { name: 'a different operation', operation: 'payment.delete', responses: [] },
+    { name: 'a missing payment', operation: 'payment.update', responses: [undefined] },
+    {
+      name: 'a missing replacement commitment',
+      operation: 'payment.update',
+      responses: [{ egcs_fc_fundingagreementcommitment: 'commitment-1' }, undefined]
+    },
+    {
+      name: 'a disabled stream configuration',
+      operation: 'payment.update',
+      responses: [
+        { egcs_fc_fundingagreementcommitment: 'commitment-1' },
+        { commitment_type: 'type-1', stream_id: 'stream-1' },
+        undefined
+      ]
+    }
+  ])('leaves $name outside the update ceiling guard', async ({ operation, responses }) => {
+    await loadHandler()
+    const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as
+      (context: Record<string, unknown>) => Promise<void>
+    const pending = [...responses]
+    const query = new Proxy({}, {
+      get: (_target, property) => property === 'executeTakeFirst'
+        ? async () => pending.shift()
+        : () => query
+    })
+    const db = { selectFrom: vi.fn(() => query) }
+
+    await expect(guard({
+      operation,
+      db,
+      agreementId: 'agreement-1',
+      paymentId: 'payment-1'
+    })).resolves.toBeUndefined()
+    expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
+  })
+
+  it('allows an enabled update whose persisted amount remains within the ceiling', async () => {
+    await loadHandler()
+    const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as
+      (context: Record<string, unknown>) => Promise<void>
+    const responses = [
+      {
+        egcs_fc_fiscalyear: 'fy-1',
+        egcs_fc_paymenttype: 'advance',
+        egcs_fc_periodend: 3,
+        egcs_fc_paymentamount: 40,
+        egcs_fc_fundingagreementcommitment: 'commitment-1'
+      },
+      { commitment_type: 'type-1', stream_id: 'stream-1' },
+      { config: { enabledPaymentTypes: ['advance'] } }
+    ]
+    const query = new Proxy({}, {
+      get: (_target, property) => property === 'executeTakeFirst'
+        ? async () => responses.shift()
+        : () => query
+    })
+    const db = { selectFrom: () => query }
+    calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({
+      enabled: true,
+      ceilingAmount: 50,
+      holdbackReleaseAmount: 0
+    })
+
+    await expect(guard({
+      operation: 'payment.update',
+      db,
+      agreementId: 'agreement-1',
+      paymentId: 'payment-1'
+    })).resolves.toBeUndefined()
   })
 })

@@ -52,8 +52,11 @@ const mountCalculator = (
       UCheckbox: defineComponent({
         props: ['modelValue', 'label'],
         emits: ['update:modelValue'],
-        setup(props) {
-          return () => h('label', props.label)
+        setup(props, { emit }) {
+          return () => h('button', {
+            'data-test': 'release-holdback',
+            onClick: () => emit('update:modelValue', !props.modelValue)
+          }, props.label)
         }
       }),
       UFormField: defineComponent({
@@ -67,8 +70,14 @@ const mountCalculator = (
       }),
       UIcon: true,
       UInput: defineComponent({
-        setup() {
-          return () => h('input')
+        props: ['modelValue'],
+        emits: ['update:modelValue'],
+        setup(props, { emit }) {
+          return () => h('input', {
+            'data-test': 'holdback-amount',
+            value: props.modelValue,
+            onInput: (event: Event) => emit('update:modelValue', (event.target as HTMLInputElement).value)
+          })
         }
       })
     }
@@ -159,5 +168,127 @@ describe('automated payment amount calculator', () => {
     expect(wrapper.text()).toContain('Payments to date')
     expect(wrapper.text()).not.toContain('baseAmount')
     expect(wrapper.text()).not.toContain('totalPaymentsToDate')
+  })
+
+  it('publishes a neutral result without calling the API until every required input is present', async () => {
+    vi.stubGlobal('useI18n', () => ({
+      t: (key: string) => messages[key] ?? key,
+      n: (value: number) => `CA$${value.toFixed(2)}`
+    }))
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mountCalculator({ paymentType: 'advance' })
+    await flushPromises()
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(wrapper.emitted('extensionPayload')?.at(-1)?.[0]).toEqual({
+      releaseHoldback: false,
+      holdbackReleaseAmount: 0
+    })
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({
+      currency: 'CAD',
+      details: [],
+      loading: false,
+      error: null
+    })
+  })
+
+  it.each([
+    {
+      name: 'plain Error',
+      rejection: new Error('calculation exploded'),
+      expected: 'calculation exploded'
+    },
+    {
+      name: 'non-Error rejection',
+      rejection: 'calculation exploded',
+      expected: 'extensions.gcs_automated_payments.calculation_error'
+    }
+  ])('normalizes a $name from the extension API', async ({ rejection, expected }) => {
+    vi.stubGlobal('useI18n', () => ({
+      t: (key: string) => messages[key] ?? key,
+      n: (value: number) => `CA$${value.toFixed(2)}`
+    }))
+    vi.stubGlobal('fetch', vi.fn(async () => { throw rejection }))
+
+    const wrapper = mountCalculator({
+      commitmentType: 'commitment',
+      fiscalYear: '1',
+      paymentType: 'reimbursement',
+      periodStart: 1,
+      periodEnd: 1
+    })
+    await flushPromises()
+
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ error: expected, loading: false })
+  })
+
+  it.each([
+    { statusText: 'Bad Gateway', json: async () => { throw new Error('not json') }, expected: 'Bad Gateway' },
+    { statusText: '', json: async () => ({}), expected: 'HTTP 400' },
+    { statusText: 'ignored', json: async () => ({ message: 'top-level message' }), expected: 'top-level message' },
+    { statusText: 'ignored', json: async () => ({ statusMessage: 'top-level status' }), expected: 'ignored' },
+    { statusText: 'ignored', json: async () => ({ data: { message: 'nested message' } }), expected: 'nested message' },
+    { statusText: 'ignored', json: async () => ({ data: { details: [null, { message: '' }, { message: 'detail message' }] } }), expected: 'detail message' }
+  ])('extracts API errors before falling back to "$statusText"', async ({ statusText, json, expected }) => {
+    vi.stubGlobal('useI18n', () => ({
+      t: (key: string) => messages[key] ?? key,
+      n: (value: number) => `CA$${value.toFixed(2)}`
+    }))
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      statusText,
+      json,
+      text: async () => ''
+    })))
+
+    const wrapper = mountCalculator({
+      commitmentType: 'commitment',
+      fiscalYear: '1',
+      paymentType: 'advance',
+      periodStart: 1,
+      periodEnd: 2
+    })
+    await flushPromises()
+
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ error: expected })
+  })
+
+  it('recalculates and publishes holdback inputs', async () => {
+    vi.stubGlobal('useI18n', () => ({
+      t: (key: string) => messages[key] ?? key,
+      n: (value: number) => `CA$${value.toFixed(2)}`
+    }))
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ceilingAmount: 10,
+        suggestedAmount: 10,
+        currency: 'CAD',
+        details: []
+      })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const wrapper = mountCalculator({
+      commitmentType: 'commitment',
+      fiscalYear: '1',
+      paymentType: 'advance',
+      periodStart: 1,
+      periodEnd: 2
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-test="release-holdback"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="holdback-amount"]').setValue('4.25')
+    await flushPromises()
+
+    expect(wrapper.emitted('extensionPayload')?.at(-1)?.[0]).toEqual({
+      releaseHoldback: true,
+      holdbackReleaseAmount: 4.25
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 })

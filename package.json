@@ -4,8 +4,9 @@
   "type": "module",
   "description": "GCS-SSC extension for automated agreement payment amount ceilings.",
   "scripts": {
-    "test:e2e": "playwright test --config playwright.config.ts",
+    "test:e2e": "cd ../.. && bun run scripts/nuxt-artifact-lock.ts -- bun run --cwd extensions/gcs-automated-payments scripts/test-e2e-managed.ts tests/e2e/automated-payment-lifecycle.spec.ts",
     "test:unit": "vitest run --config vitest.config.ts",
+    "test:integration:postgres": "vitest run --config vitest.postgres.config.ts",
     "test:coverage": "vitest run --coverage --config vitest.config.ts",
     "typecheck": "vue-tsc --noEmit"
   },

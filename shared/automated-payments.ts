@@ -58,6 +58,31 @@ const defaultAutomatedPaymentExtensionPayload: AutomatedPaymentExtensionPayload 
   holdbackReleaseAmount: 0
 }
 
+const MAX_POSTGRES_BIGINT_TEXT = '9223372036854775807'
+
+const isPositivePostgresBigintText = (value: string): boolean =>
+  /^[1-9]\d*$/.test(value)
+  && (
+    value.length < MAX_POSTGRES_BIGINT_TEXT.length
+    || (value.length === MAX_POSTGRES_BIGINT_TEXT.length && value <= MAX_POSTGRES_BIGINT_TEXT)
+  )
+
+/** Canonical positive decimal identifier accepted by PostgreSQL signed bigint columns. */
+export const AutomatedPaymentPositiveBigintIdSchema = z.preprocess(
+  value => {
+    if (typeof value === 'string') return value.trim()
+    if (typeof value === 'bigint') return String(value)
+    if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
+    return value
+  },
+  z.string()
+    .min(1)
+    .refine(isPositivePostgresBigintText)
+)
+
+/** Canonical UUID identifier accepted by automated-payment request fields. */
+export const AutomatedPaymentUuidIdSchema = z.uuid()
+
 const AutomatedPaymentExtensionPayloadSchema = z.object({
   releaseHoldback: z.boolean().default(false),
   holdbackReleaseAmount: z.preprocess(
@@ -70,8 +95,8 @@ const AutomatedPaymentExtensionPayloadSchema = z.object({
 }))
 
 export const AutomatedPaymentCalculateSchema = z.object({
-  egcs_fc_commitmenttype: z.string().min(1),
-  egcs_fc_fiscalyear: z.string().min(1),
+  egcs_fc_commitmenttype: AutomatedPaymentPositiveBigintIdSchema,
+  egcs_fc_fiscalyear: AutomatedPaymentUuidIdSchema,
   egcs_fc_paymenttype: z.enum(automatedPaymentTypes),
   egcs_fc_periodstart: z.coerce.number().int().min(0).max(11),
   egcs_fc_periodend: z.coerce.number().int().min(0).max(11),
