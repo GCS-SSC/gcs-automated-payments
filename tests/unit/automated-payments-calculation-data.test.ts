@@ -118,39 +118,39 @@ describe('automated payment calculation data', () => {
     const { db, queries } = createCalculationDb({
       Funding_Case_Agreement_Budget_Fiscal_Year: { fiscal_year_order: 2026 },
       Funding_Case_Agreement_Claim_Reconcile_Line_Item: [
-        { amount: '10', month: 2, fiscal_year_order: 2026 },
-        { amount: 5, month: 3, fiscal_year_order: 2026 },
-        { amount: 99, month: 1, fiscal_year_order: 2027 }
+        { amount: '10.00', month: 2, fiscal_year_order: 2026 },
+        { amount: '5.00', month: 3, fiscal_year_order: 2026 },
+        { amount: '99.00', month: 1, fiscal_year_order: 2027 }
       ],
       Funding_Case_Agreement_Forecast_Line_Item: [
-        { amount: 4, month: 1, fiscal_year_order: 2026 },
-        { amount: 8, month: 4, fiscal_year_order: 2026 }
+        { amount: '4.00', month: 1, fiscal_year_order: 2026 },
+        { amount: '8.00', month: 4, fiscal_year_order: 2026 }
       ],
       Funding_Case_Agreement_Payment: [
-        { id: 20, amount: 2, month: 1, fiscal_year_order: 2026 },
-        { id: 21, amount: 3, month: 5, fiscal_year_order: 2026 }
+        { id: 20, amount: '2.00', month: 1, fiscal_year_order: 2026 },
+        { id: 21, amount: '3.00', month: 5, fiscal_year_order: 2026 }
       ],
       Funding_Case_Agreement_Commitment_Line: [
-        { id: 30, amount: 50 },
-        { id: 31, amount: 20 }
+        { id: 30, amount: '50.00' },
+        { id: 31, amount: '20.00' }
       ],
-      Funding_Case_Agreement_Payment_Line: [{ amount: 10 }],
+      Funding_Case_Agreement_Payment_Line: [{ amount: '10.00' }],
       Funding_Case_Agreement_Budget_Line_Item: [
-        { amount: 100, fiscal_year_order: 2026 },
-        { amount: 50, fiscal_year_order: 2027 }
+        { amount: '100.00', fiscal_year_order: 2026 },
+        { amount: '50.00', fiscal_year_order: 2027 }
       ],
       Funding_Case_Agreement_Profile: {
         egcs_fc_holdback: '10', holdback_basis_code: 'final-fiscal-year'
       },
       'extensions.kv_entry': [
-        { value: { releaseHoldback: true, holdbackReleaseAmount: 2 } }
+        { value: { releaseHoldback: true, holdbackReleaseAmount: '2.00' } }
       ]
     })
 
     const result = await calculateAutomatedPaymentFromDb(db as never, {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3',
       paymentType: 'advance', periodEnd: 4, excludePaymentId: '21',
-      releaseHoldback: true, holdbackReleaseAmount: 3
+      releaseHoldback: true, holdbackReleaseAmount: '3.00' as never
     }, { enabledPaymentTypes: ['advance'] })
 
     expect(result.enabled).toBe(true)
@@ -166,7 +166,7 @@ describe('automated payment calculation data', () => {
     const { db, selectFrom } = createCalculationDb({
       Funding_Case_Agreement_Budget_Fiscal_Year: { fiscal_year_order: 2026 },
       Funding_Case_Agreement_Claim_Reconcile_Line_Item: [],
-      Funding_Case_Agreement_Forecast_Line_Item: [{ amount: 8, month: 4, fiscal_year_order: 2026 }],
+      Funding_Case_Agreement_Forecast_Line_Item: [{ amount: '8.00', month: 4, fiscal_year_order: 2026 }],
       Funding_Case_Agreement_Payment: [],
       Funding_Case_Agreement_Commitment_Line: [],
       Funding_Case_Agreement_Budget_Line_Item: [],
@@ -183,7 +183,7 @@ describe('automated payment calculation data', () => {
     expect(selectFrom).not.toHaveBeenCalledWith('extensions.kv_entry')
   })
 
-  it('normalizes sparse database values and retains the latest eligible claim period', async () => {
+  it('rejects a raw numeric driver value instead of silently losing exact money', async () => {
     const { db, selectFrom } = createCalculationDb({
       Funding_Case_Agreement_Budget_Fiscal_Year: { fiscal_year_order: 2026 },
       Funding_Case_Agreement_Claim_Reconcile_Line_Item: [
@@ -205,12 +205,10 @@ describe('automated payment calculation data', () => {
       }
     })
 
-    const result = await calculateAutomatedPaymentFromDb(db as never, {
+    await expect(calculateAutomatedPaymentFromDb(db as never, {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3',
       paymentType: 'reimbursement', periodEnd: 4
-    }, { enabledPaymentTypes: ['reimbursement'] })
-
-    expect(result).toMatchObject({ enabled: true, currency: 'CAD' })
+    }, { enabledPaymentTypes: ['reimbursement'] })).rejects.toThrow('Database money must be selected as text.')
     expect(selectFrom).not.toHaveBeenCalledWith('Funding_Case_Agreement_Payment_Line')
     expect(selectFrom).not.toHaveBeenCalledWith('extensions.kv_entry')
   })
@@ -221,7 +219,7 @@ describe('automated payment calculation data', () => {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3',
       paymentType: 'advance', periodEnd: 4
     }, { enabledPaymentTypes: ['reimbursement'] })).resolves.toEqual(expect.objectContaining({
-      enabled: false, ceilingAmount: 0, details: []
+      enabled: false, ceilingAmount: '0.00', details: []
     }))
     expect(db.selectFrom).not.toHaveBeenCalled()
   })
@@ -247,11 +245,11 @@ describe('automated payment calculation data', () => {
     expect(updated.where).toHaveBeenCalledWith('id', '=', '2')
 
     await expect(getPaymentMetadata(createQuery(undefined) as never, '1')).resolves.toEqual({
-      releaseHoldback: false, holdbackReleaseAmount: 0
+      releaseHoldback: false, holdbackReleaseAmount: '0.00'
     })
     await expect(getPaymentMetadata(createQuery({
       value: { releaseHoldback: true, holdbackReleaseAmount: '4.5' }
-    }) as never, '1')).resolves.toEqual({ releaseHoldback: true, holdbackReleaseAmount: 4.5 })
+    }) as never, '1')).resolves.toEqual({ releaseHoldback: true, holdbackReleaseAmount: '4.50' })
   })
 
   it('returns the selected period when the stable fiscal year is available', async () => {

@@ -3,12 +3,14 @@ import {
   registerGcsExtensionAgreementPaymentMutationGuard,
   registerGcsExtensionCreateOperationHandler
 } from '@gcs-ssc/extensions/server'
-import type { Transaction } from 'kysely'
+import { sql, type Transaction } from 'kysely'
 import {
   AutomatedPaymentCalculateSchema,
   EXTENSION_KEY,
+  ZERO_AUTOMATED_PAYMENT_MONEY,
+  compareAutomatedPaymentMoney,
+  parseAutomatedPaymentMoney,
   parseAutomatedPaymentExtensionPayload,
-  roundCurrency
 } from '../../shared/automated-payments'
 import {
   calculateAutomatedPaymentFromDb,
@@ -18,6 +20,7 @@ import {
 } from '../calculation-data'
 import { createAutomatedPaymentUserError } from '../errors'
 import { guardAutomatedPaymentsActivation } from '../activation'
+import { databaseNumericText, parseDatabaseMoney } from '../numeric'
 
 const EXTENSION_ENABLE_GUARD_HOOK = 'gcs:extension:enable-guard'
 
@@ -117,8 +120,8 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
       return { status: 'continue' }
     }
 
-    const submittedAmount = roundCurrency(parsed.data.egcs_fc_paymentamount ?? 0)
-    if (submittedAmount > calculation.ceilingAmount) {
+    const submittedAmount = parsed.data.egcs_fc_paymentamount ?? ZERO_AUTOMATED_PAYMENT_MONEY
+    if (compareAutomatedPaymentMoney(submittedAmount, calculation.ceilingAmount) > 0) {
       throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING', 'egcs_fc_paymentamount')
     }
 
@@ -126,9 +129,9 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
   }, nitroApp as Parameters<typeof registerGcsExtensionCreateOperationHandler>[3])
 
   registerGcsExtensionAgreementPaymentMutationGuard(EXTENSION_KEY, async context => {
-    if (context.operation !== 'payment.update') return
     const db = context.db as Transaction<Record<string, Record<string, unknown>>>
     await lockAutomatedPaymentAgreement(db, context.agreementId)
+    if (context.operation !== 'payment.update') return
     const payment = await db
       .selectFrom('Funding_Case_Agreement_Payment')
       .innerJoin(
@@ -140,7 +143,7 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
         'Funding_Case_Agreement_Payment.egcs_fc_fiscalyear',
         'Funding_Case_Agreement_Payment.egcs_fc_paymenttype',
         'Funding_Case_Agreement_Payment.egcs_fc_periodend',
-        'Funding_Case_Agreement_Payment.egcs_fc_paymentamount',
+        databaseNumericText(sql.ref('Funding_Case_Agreement_Payment.egcs_fc_paymentamount')).as('egcs_fc_paymentamount'),
         'Funding_Case_Agreement_Payment.egcs_fc_fundingagreementcommitment'
       ])
       .where('Funding_Case_Agreement_Payment.id', '=', context.paymentId)
@@ -184,12 +187,17 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
       fiscalYearId: String(changes.egcs_fc_fiscalyear ?? payment.egcs_fc_fiscalyear),
       paymentType: String(changes.egcs_fc_paymenttype ?? payment.egcs_fc_paymenttype) as 'reimbursement' | 'advance',
       periodEnd: Number(changes.egcs_fc_periodend ?? payment.egcs_fc_periodend),
-      submittedAmount: Number(changes.egcs_fc_paymentamount ?? payment.egcs_fc_paymentamount),
+      submittedAmount: changes.egcs_fc_paymentamount === undefined
+        ? parseDatabaseMoney(payment.egcs_fc_paymentamount)
+        : parseAutomatedPaymentMoney(changes.egcs_fc_paymentamount as string | number),
       releaseHoldback: metadata.releaseHoldback,
       holdbackReleaseAmount: metadata.holdbackReleaseAmount,
       excludePaymentId: context.paymentId
     }, streamConfig.config)
-    if (calculation.enabled && Number(changes.egcs_fc_paymentamount ?? payment.egcs_fc_paymentamount) > calculation.ceilingAmount) {
+    const nextAmount = changes.egcs_fc_paymentamount === undefined
+      ? parseDatabaseMoney(payment.egcs_fc_paymentamount)
+      : parseAutomatedPaymentMoney(changes.egcs_fc_paymentamount as string | number)
+    if (calculation.enabled && compareAutomatedPaymentMoney(nextAmount, calculation.ceilingAmount) > 0) {
       throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING', 'egcs_fc_paymentamount')
     }
   }, nitroApp as Parameters<typeof registerGcsExtensionAgreementPaymentMutationGuard>[2])

@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, ref } from 'vue'
 import AutomatedPaymentAmountCalculator from '../../components/AutomatedPaymentAmountCalculator.vue'
 
 afterEach(() => {
@@ -88,7 +88,7 @@ describe('automated payment amount calculator', () => {
   it('shows localized API detail messages instead of HTTP status text', async () => {
     vi.stubGlobal('useI18n', () => ({
       t: (key: string) => messages[key] ?? key,
-      n: (value: number) => `CA$${value.toFixed(2)}`
+      locale: ref('en')
     }))
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: false,
@@ -128,24 +128,24 @@ describe('automated payment amount calculator', () => {
   it('renders calculation details with readable labels in an accordion', async () => {
     vi.stubGlobal('useI18n', () => ({
       t: (key: string) => messages[key] ?? key,
-      n: (value: number) => `CA$${value.toFixed(2)}`
+      locale: ref('en')
     }))
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       json: async () => ({
-        baseAmount: 10,
-        ceilingAmount: 10,
-        suggestedAmount: 10,
-        holdbackAmount: 0,
-        holdbackReleaseAmount: 0,
-        availableBeforeHoldback: 93.5,
+        baseAmount: '10.00',
+        ceilingAmount: '10.00',
+        suggestedAmount: '10.00',
+        holdbackAmount: '0.00',
+        holdbackReleaseAmount: '0.00',
+        availableBeforeHoldback: '93.50',
         currency: 'CAD',
         details: [
-          { label: 'baseAmount', value: 10 },
-          { label: 'commitmentRemaining', value: 25 },
-          { label: 'availableBeforeHoldback', value: 93.5 },
-          { label: 'holdbackReleaseAmount', value: 0 },
-          { label: 'totalPaymentsToDate', value: 50 }
+          { label: 'baseAmount', value: '10.00' },
+          { label: 'commitmentRemaining', value: '25.00' },
+          { label: 'availableBeforeHoldback', value: '93.50' },
+          { label: 'holdbackReleaseAmount', value: '0.00' },
+          { label: 'totalPaymentsToDate', value: '50.00' }
         ]
       })
     })))
@@ -173,7 +173,7 @@ describe('automated payment amount calculator', () => {
   it('publishes a neutral result without calling the API until every required input is present', async () => {
     vi.stubGlobal('useI18n', () => ({
       t: (key: string) => messages[key] ?? key,
-      n: (value: number) => `CA$${value.toFixed(2)}`
+      locale: ref('en')
     }))
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -184,7 +184,7 @@ describe('automated payment amount calculator', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     expect(wrapper.emitted('extensionPayload')?.at(-1)?.[0]).toEqual({
       releaseHoldback: false,
-      holdbackReleaseAmount: 0
+      holdbackReleaseAmount: '0.00'
     })
     expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({
       currency: 'CAD',
@@ -208,7 +208,7 @@ describe('automated payment amount calculator', () => {
   ])('normalizes a $name from the extension API', async ({ rejection, expected }) => {
     vi.stubGlobal('useI18n', () => ({
       t: (key: string) => messages[key] ?? key,
-      n: (value: number) => `CA$${value.toFixed(2)}`
+      locale: ref('en')
     }))
     vi.stubGlobal('fetch', vi.fn(async () => { throw rejection }))
 
@@ -234,7 +234,7 @@ describe('automated payment amount calculator', () => {
   ])('extracts API errors before falling back to "$statusText"', async ({ statusText, json, expected }) => {
     vi.stubGlobal('useI18n', () => ({
       t: (key: string) => messages[key] ?? key,
-      n: (value: number) => `CA$${value.toFixed(2)}`
+      locale: ref('en')
     }))
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: false,
@@ -259,13 +259,13 @@ describe('automated payment amount calculator', () => {
   it('recalculates and publishes holdback inputs', async () => {
     vi.stubGlobal('useI18n', () => ({
       t: (key: string) => messages[key] ?? key,
-      n: (value: number) => `CA$${value.toFixed(2)}`
+      locale: ref('en')
     }))
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
-        ceilingAmount: 10,
-        suggestedAmount: 10,
+        ceilingAmount: '10.00',
+        suggestedAmount: '10.00',
         currency: 'CAD',
         details: []
       })
@@ -287,8 +287,16 @@ describe('automated payment amount calculator', () => {
 
     expect(wrapper.emitted('extensionPayload')?.at(-1)?.[0]).toEqual({
       releaseHoldback: true,
-      holdbackReleaseAmount: 4.25
+      holdbackReleaseAmount: '4.25'
     })
     expect(fetchMock).toHaveBeenCalledTimes(3)
+
+    await wrapper.get('[data-test="holdback-amount"]').setValue('4.2x')
+    await flushPromises()
+
+    expect(wrapper.emitted('extensionPayload')?.at(-1)?.[0]).toEqual({
+      releaseHoldback: true,
+      holdbackReleaseAmount: '4.2x'
+    })
   })
 })

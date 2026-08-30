@@ -1,184 +1,160 @@
 import { z } from 'zod'
 
 export const EXTENSION_KEY = 'gcs-automated-payments'
-
 const automatedPaymentTypes = ['reimbursement', 'advance'] as const
 export type AutomatedPaymentType = (typeof automatedPaymentTypes)[number]
-
 const holdbackBasisValues = ['agreement-total', 'final-fiscal-year'] as const
 export type HoldbackBasis = (typeof holdbackBasisValues)[number]
 
-export interface AutomatedPaymentsHoldbackSettings {
-  holdbackPercent: number
-  holdbackBasis: HoldbackBasis
-}
+declare const moneyBrand: unique symbol
+export type AutomatedPaymentMoney = string & { readonly [moneyBrand]: true }
+export type AutomatedPaymentMoneyInput = string | number
+const MONEY_INPUT = /^-?(?:0|[1-9]\d*)(?:\.\d{1,2})?$/
+const MAX_ROW_CENTS = 9_999_999_999_999_999_999n
+export const ZERO_AUTOMATED_PAYMENT_MONEY = '0.00' as AutomatedPaymentMoney
 
-export interface AutomatedPaymentsStreamConfig {
-  enabledPaymentTypes: AutomatedPaymentType[]
+const toCents = (value: string, bounded = false): bigint => {
+  if (!MONEY_INPUT.test(value)) throw new TypeError('Money must be an exact decimal with at most two fractional digits.')
+  const negative = value.startsWith('-')
+  const [whole = '0', fraction = ''] = (negative ? value.slice(1) : value).split('.')
+  const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'))
+  const signed = negative ? -cents : cents
+  if (bounded && (signed > MAX_ROW_CENTS || signed < -MAX_ROW_CENTS)) throw new RangeError('Money exceeds numeric(19,2).')
+  return signed
 }
-
-export interface AutomatedPaymentExtensionPayload {
-  releaseHoldback: boolean
-  holdbackReleaseAmount: number
+const fromCents = (cents: bigint): AutomatedPaymentMoney => {
+  const negative = cents < 0n
+  const absolute = negative ? -cents : cents
+  return `${negative ? '-' : ''}${absolute / 100n}.${String(absolute % 100n).padStart(2, '0')}` as AutomatedPaymentMoney
 }
+export const tryParseAutomatedPaymentMoney = (value: unknown): AutomatedPaymentMoney | null => {
+  try {
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) return null
+      const cents = toCents(String(value), true)
+      if (cents > BigInt(Number.MAX_SAFE_INTEGER) || cents < BigInt(Number.MIN_SAFE_INTEGER)) return null
+      return fromCents(cents)
+    }
+    return typeof value === 'string' ? fromCents(toCents(value, true)) : null
+  } catch { return null }
+}
+export const parseAutomatedPaymentMoney = (value: string | number): AutomatedPaymentMoney => {
+  const parsed = tryParseAutomatedPaymentMoney(value)
+  if (parsed === null) throw new TypeError('Invalid exact money value.')
+  return parsed
+}
+export const parseAutomatedPaymentAggregateMoney = (value: string): AutomatedPaymentMoney => fromCents(toCents(value))
+export const AutomatedPaymentMoneySchema = z.union([z.string(), z.number()]).transform((value, ctx) => {
+  const parsed = tryParseAutomatedPaymentMoney(value)
+  if (parsed !== null) return parsed
+  ctx.addIssue({ code: 'custom', message: 'GCS_AUTOMATED_PAYMENTS_MONEY_INVALID' })
+  return z.NEVER
+})
+export const addAutomatedPaymentMoney = (a: AutomatedPaymentMoney, b: AutomatedPaymentMoney) => fromCents(toCents(a) + toCents(b))
+export const subtractAutomatedPaymentMoney = (a: AutomatedPaymentMoney, b: AutomatedPaymentMoney) => fromCents(toCents(a) - toCents(b))
+export const compareAutomatedPaymentMoney = (a: AutomatedPaymentMoney, b: AutomatedPaymentMoney) => toCents(a) < toCents(b) ? -1 : toCents(a) > toCents(b) ? 1 : 0
+export const sumAutomatedPaymentMoney = (values: AutomatedPaymentMoney[]) => values.reduce(addAutomatedPaymentMoney, ZERO_AUTOMATED_PAYMENT_MONEY)
 
+export interface AutomatedPaymentsHoldbackSettings { holdbackPercent: number, holdbackBasis: HoldbackBasis }
+export interface AutomatedPaymentsStreamConfig { enabledPaymentTypes: AutomatedPaymentType[] }
+export interface AutomatedPaymentExtensionPayload { releaseHoldback: boolean, holdbackReleaseAmount: AutomatedPaymentMoney }
 export interface AutomatedPaymentCalculationInput {
   paymentType: AutomatedPaymentType
   periodEnd: number
-  totalClaimsToLastClaimMonth: number
-  totalPaymentsToDate: number
-  totalForecastToLastClaimMonth: number
-  totalForecastToPeriodEnd: number
-  commitmentRemaining: number
-  agreementTotal: number
-  finalFiscalYearTotal: number
-  availableForDisbursementBeforeHoldback: number
-  holdbackAlreadyReleased: number
+  totalClaimsToLastClaimMonth: AutomatedPaymentMoneyInput
+  totalPaymentsToDate: AutomatedPaymentMoneyInput
+  totalForecastToLastClaimMonth: AutomatedPaymentMoneyInput
+  totalForecastToPeriodEnd: AutomatedPaymentMoneyInput
+  commitmentRemaining: AutomatedPaymentMoneyInput
+  agreementTotal: AutomatedPaymentMoneyInput
+  finalFiscalYearTotal: AutomatedPaymentMoneyInput
+  availableForDisbursementBeforeHoldback: AutomatedPaymentMoneyInput
+  holdbackAlreadyReleased: AutomatedPaymentMoneyInput
   releaseHoldback?: boolean
-  holdbackReleaseAmount?: number
+  holdbackReleaseAmount?: AutomatedPaymentMoneyInput
 }
-
 export interface AutomatedPaymentCalculationResult {
-  baseAmount: number
-  ceilingAmount: number
-  suggestedAmount: number
-  holdbackAmount: number
-  holdbackReleaseAmount: number
-  availableBeforeHoldback: number
+  baseAmount: AutomatedPaymentMoney
+  ceilingAmount: AutomatedPaymentMoney
+  suggestedAmount: AutomatedPaymentMoney
+  holdbackAmount: AutomatedPaymentMoney
+  holdbackReleaseAmount: AutomatedPaymentMoney
+  availableBeforeHoldback: AutomatedPaymentMoney
   currency: 'CAD'
-  details: Array<{ label: string, value: number }>
+  details: Array<{ label: string, value: AutomatedPaymentMoney }>
 }
 
-const defaultAutomatedPaymentsStreamConfig: AutomatedPaymentsStreamConfig = {
-  enabledPaymentTypes: ['reimbursement', 'advance']
-}
-
-const defaultAutomatedPaymentExtensionPayload: AutomatedPaymentExtensionPayload = {
-  releaseHoldback: false,
-  holdbackReleaseAmount: 0
-}
-
-const MAX_POSTGRES_BIGINT_TEXT = '9223372036854775807'
-
-const isPositivePostgresBigintText = (value: string): boolean =>
-  /^[1-9]\d*$/.test(value)
-  && (
-    value.length < MAX_POSTGRES_BIGINT_TEXT.length
-    || (value.length === MAX_POSTGRES_BIGINT_TEXT.length && value <= MAX_POSTGRES_BIGINT_TEXT)
-  )
-
-/** Canonical positive decimal identifier accepted by PostgreSQL signed bigint columns. */
-export const AutomatedPaymentPositiveBigintIdSchema = z.preprocess(
-  value => {
-    if (typeof value === 'string') return value.trim()
-    if (typeof value === 'bigint') return String(value)
-    if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
-    return value
-  },
-  z.string()
-    .min(1)
-    .refine(isPositivePostgresBigintText)
-)
-
-/** Canonical UUID identifier accepted by automated-payment request fields. */
+const defaultConfig: AutomatedPaymentsStreamConfig = { enabledPaymentTypes: ['reimbursement', 'advance'] }
+const defaultPayload: AutomatedPaymentExtensionPayload = { releaseHoldback: false, holdbackReleaseAmount: ZERO_AUTOMATED_PAYMENT_MONEY }
+const MAX_BIGINT = '9223372036854775807'
+const positiveBigint = (value: string) => /^[1-9]\d*$/.test(value) && (value.length < MAX_BIGINT.length || (value.length === MAX_BIGINT.length && value <= MAX_BIGINT))
+export const AutomatedPaymentPositiveBigintIdSchema = z.preprocess(value => {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'bigint') return String(value)
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
+  return value
+}, z.string().refine(positiveBigint))
 export const AutomatedPaymentUuidIdSchema = z.uuid()
-
-const AutomatedPaymentExtensionPayloadSchema = z.object({
+export const AutomatedPaymentExtensionPayloadSchema = z.object({
   releaseHoldback: z.boolean().default(false),
-  holdbackReleaseAmount: z.preprocess(
-    value => value === '' || value === undefined || value === null ? 0 : value,
-    z.coerce.number().finite().nonnegative().default(0)
-  )
-}).transform(data => ({
-  releaseHoldback: data.releaseHoldback,
-  holdbackReleaseAmount: data.releaseHoldback ? data.holdbackReleaseAmount : 0
-}))
-
+  holdbackReleaseAmount: z.preprocess(value => value === '' || value === undefined || value === null ? ZERO_AUTOMATED_PAYMENT_MONEY : value, AutomatedPaymentMoneySchema.default(ZERO_AUTOMATED_PAYMENT_MONEY))
+}).transform(value => ({ releaseHoldback: value.releaseHoldback, holdbackReleaseAmount: value.releaseHoldback ? value.holdbackReleaseAmount : ZERO_AUTOMATED_PAYMENT_MONEY }))
 export const AutomatedPaymentCalculateSchema = z.object({
   egcs_fc_commitmenttype: AutomatedPaymentPositiveBigintIdSchema,
   egcs_fc_fiscalyear: AutomatedPaymentUuidIdSchema,
   egcs_fc_paymenttype: z.enum(automatedPaymentTypes),
   egcs_fc_periodstart: z.coerce.number().int().min(0).max(11),
   egcs_fc_periodend: z.coerce.number().int().min(0).max(11),
-  egcs_fc_paymentamount: z.coerce.number().finite().optional(),
+  egcs_fc_paymentamount: AutomatedPaymentMoneySchema.optional(),
   extensions: z.record(z.string(), z.json()).optional()
-}).refine(data => data.egcs_fc_periodstart <= data.egcs_fc_periodend, {
-  message: 'GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID',
-  path: ['egcs_fc_periodend']
-})
-
-/** Rounds a finite numeric value to Canadian currency precision, returning zero for non-finite input. */
-export const roundCurrency = (value: number): number => {
-  if (!Number.isFinite(value)) {
-    return 0
+}).refine(value => value.egcs_fc_periodstart <= value.egcs_fc_periodend, { message: 'GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID', path: ['egcs_fc_periodend'] }).superRefine((value, ctx) => {
+  const payload = value.extensions?.[EXTENSION_KEY]
+  if (payload === undefined) return
+  const parsed = AutomatedPaymentExtensionPayloadSchema.safeParse(payload)
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) ctx.addIssue({ ...issue, path: ['extensions', EXTENSION_KEY, ...issue.path] })
   }
-  return Math.round((value + Number.EPSILON) * 100) / 100
-}
-
-const lowerCurrency = (values: number[]): number => Math.min(...values.map(value => roundCurrency(value)))
-
-/** Normalizes an unknown stream configuration to the supported automated payment types. */
+})
 export const parseAutomatedPaymentsStreamConfig = (value: unknown): AutomatedPaymentsStreamConfig => {
   const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-  const enabledPaymentTypes = Array.isArray(raw.enabledPaymentTypes)
-    ? raw.enabledPaymentTypes.filter((item): item is AutomatedPaymentType => item === 'reimbursement' || item === 'advance')
-    : defaultAutomatedPaymentsStreamConfig.enabledPaymentTypes
-
-  return {
-    enabledPaymentTypes
-  }
+  return { enabledPaymentTypes: Array.isArray(raw.enabledPaymentTypes) ? raw.enabledPaymentTypes.filter((item): item is AutomatedPaymentType => item === 'reimbursement' || item === 'advance') : defaultConfig.enabledPaymentTypes }
 }
-
-/** Parses payment extension metadata, falling back to the default holdback settings when invalid. */
 export const parseAutomatedPaymentExtensionPayload = (value: unknown): AutomatedPaymentExtensionPayload => {
   const parsed = AutomatedPaymentExtensionPayloadSchema.safeParse(value)
-  return parsed.success ? parsed.data : defaultAutomatedPaymentExtensionPayload
+  return parsed.success ? parsed.data : defaultPayload
 }
 
-/** Calculates the eligible payment ceiling and holdback breakdown from agreement financial totals. */
-export const calculateAutomatedPaymentAmount = (
-  input: AutomatedPaymentCalculationInput,
-  holdbackSettings: AutomatedPaymentsHoldbackSettings
-): AutomatedPaymentCalculationResult => {
-  const baseAmount = input.paymentType === 'advance'
-    ? input.totalClaimsToLastClaimMonth - input.totalForecastToLastClaimMonth + input.totalForecastToPeriodEnd - input.totalPaymentsToDate
-    : input.totalClaimsToLastClaimMonth - input.totalPaymentsToDate
-
-  const holdbackBasisAmount = holdbackSettings.holdbackBasis === 'final-fiscal-year'
-    ? input.finalFiscalYearTotal
-    : input.agreementTotal
-  const holdbackAmount = roundCurrency(holdbackBasisAmount * (holdbackSettings.holdbackPercent / 100))
-  const remainingHoldback = roundCurrency(Math.max(holdbackAmount - input.holdbackAlreadyReleased, 0))
-  const requestedHoldbackRelease = input.releaseHoldback === true
-    ? roundCurrency(input.holdbackReleaseAmount ?? 0)
-    : 0
-  const holdbackReleaseAmount = roundCurrency(Math.min(requestedHoldbackRelease, remainingHoldback))
-  const availableBeforeHoldback = roundCurrency(Math.max(input.availableForDisbursementBeforeHoldback, 0))
-  const availableWithHoldbackRelease = roundCurrency(availableBeforeHoldback + holdbackReleaseAmount)
-  const positiveBaseAmount = roundCurrency(Math.max(baseAmount, 0))
-  const ceilingAmount = roundCurrency(Math.max(lowerCurrency([
-    positiveBaseAmount,
-    input.commitmentRemaining,
-    availableWithHoldbackRelease
-  ]), 0))
-
-  return {
-    baseAmount: positiveBaseAmount,
-    ceilingAmount,
-    suggestedAmount: ceilingAmount,
-    holdbackAmount,
-    holdbackReleaseAmount,
-    availableBeforeHoldback,
-    currency: 'CAD',
-    details: [
-      { label: 'baseAmount', value: positiveBaseAmount },
-      { label: 'commitmentRemaining', value: roundCurrency(input.commitmentRemaining) },
-      { label: 'availableBeforeHoldback', value: availableBeforeHoldback },
-      { label: 'holdbackReleaseAmount', value: holdbackReleaseAmount },
-      { label: 'totalClaimsToLastClaimMonth', value: roundCurrency(input.totalClaimsToLastClaimMonth) },
-      { label: 'totalForecastToLastClaimMonth', value: roundCurrency(input.totalForecastToLastClaimMonth) },
-      { label: 'totalForecastToPeriodEnd', value: roundCurrency(input.totalForecastToPeriodEnd) },
-      { label: 'totalPaymentsToDate', value: roundCurrency(input.totalPaymentsToDate) }
-    ]
-  }
+/** Preserves the current approximate rule until DEC-041 defines fractional-cent holdback rounding. */
+export const calculateLegacyDec041HoldbackAmount = (basis: AutomatedPaymentMoney, percent: number): AutomatedPaymentMoney => {
+  const value = Number(basis) * (percent / 100)
+  return parseAutomatedPaymentMoney(Number.isFinite(value) ? Math.round((value + Number.EPSILON) * 100) / 100 : 0)
+}
+const maxZero = (value: AutomatedPaymentMoney) => compareAutomatedPaymentMoney(value, ZERO_AUTOMATED_PAYMENT_MONEY) < 0 ? ZERO_AUTOMATED_PAYMENT_MONEY : value
+const minMoney = (values: AutomatedPaymentMoney[]) => values.reduce((a, b) => compareAutomatedPaymentMoney(a, b) <= 0 ? a : b)
+export const calculateAutomatedPaymentAmount = (input: AutomatedPaymentCalculationInput, settings: AutomatedPaymentsHoldbackSettings): AutomatedPaymentCalculationResult => {
+  const claims = parseAutomatedPaymentMoney(input.totalClaimsToLastClaimMonth)
+  const payments = parseAutomatedPaymentMoney(input.totalPaymentsToDate)
+  const forecastLastClaim = parseAutomatedPaymentMoney(input.totalForecastToLastClaimMonth)
+  const forecastPeriodEnd = parseAutomatedPaymentMoney(input.totalForecastToPeriodEnd)
+  const commitmentRemaining = parseAutomatedPaymentMoney(input.commitmentRemaining)
+  const agreementTotal = parseAutomatedPaymentMoney(input.agreementTotal)
+  const finalFiscalYearTotal = parseAutomatedPaymentMoney(input.finalFiscalYearTotal)
+  const available = parseAutomatedPaymentMoney(input.availableForDisbursementBeforeHoldback)
+  const released = parseAutomatedPaymentMoney(input.holdbackAlreadyReleased)
+  const base = input.paymentType === 'advance'
+    ? subtractAutomatedPaymentMoney(addAutomatedPaymentMoney(subtractAutomatedPaymentMoney(claims, forecastLastClaim), forecastPeriodEnd), payments)
+    : subtractAutomatedPaymentMoney(claims, payments)
+  const holdbackAmount = calculateLegacyDec041HoldbackAmount(settings.holdbackBasis === 'final-fiscal-year' ? finalFiscalYearTotal : agreementTotal, settings.holdbackPercent)
+  const remaining = maxZero(subtractAutomatedPaymentMoney(holdbackAmount, released))
+  const requested = input.releaseHoldback ? parseAutomatedPaymentMoney(input.holdbackReleaseAmount ?? ZERO_AUTOMATED_PAYMENT_MONEY) : ZERO_AUTOMATED_PAYMENT_MONEY
+  const holdbackReleaseAmount = minMoney([requested, remaining])
+  const availableBeforeHoldback = maxZero(available)
+  const baseAmount = maxZero(base)
+  const ceilingAmount = maxZero(minMoney([baseAmount, commitmentRemaining, addAutomatedPaymentMoney(availableBeforeHoldback, holdbackReleaseAmount)]))
+  return { baseAmount, ceilingAmount, suggestedAmount: ceilingAmount, holdbackAmount, holdbackReleaseAmount, availableBeforeHoldback, currency: 'CAD', details: [
+    { label: 'baseAmount', value: baseAmount }, { label: 'commitmentRemaining', value: commitmentRemaining },
+    { label: 'availableBeforeHoldback', value: availableBeforeHoldback }, { label: 'holdbackReleaseAmount', value: holdbackReleaseAmount },
+    { label: 'totalClaimsToLastClaimMonth', value: claims }, { label: 'totalForecastToLastClaimMonth', value: forecastLastClaim },
+    { label: 'totalForecastToPeriodEnd', value: forecastPeriodEnd }, { label: 'totalPaymentsToDate', value: payments }
+  ] }
 }

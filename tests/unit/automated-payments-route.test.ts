@@ -91,7 +91,7 @@ describe('gcs automated payments calculation route', () => {
     }))).rejects.toMatchObject({
       code: 'GCS_AUTOMATED_PAYMENTS_INVALID_CALCULATION_INPUT',
       statusCode: 400,
-      details: [expect.objectContaining({ path: field, code })]
+      details: expect.arrayContaining([expect.objectContaining({ path: field, code })])
     })
     expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
   })
@@ -99,12 +99,12 @@ describe('gcs automated payments calculation route', () => {
   it('passes validated payment fields, extension payload, and stream config to the calculator', async () => {
     const result = {
       enabled: true,
-      baseAmount: 100,
-      ceilingAmount: 90,
-      suggestedAmount: 90,
-      holdbackAmount: 10,
-      holdbackReleaseAmount: 5,
-      availableBeforeHoldback: 85,
+      baseAmount: '100.00',
+      ceilingAmount: '90.00',
+      suggestedAmount: '90.00',
+      holdbackAmount: '10.00',
+      holdbackReleaseAmount: '5.00',
+      availableBeforeHoldback: '85.00',
       currency: 'CAD',
       details: []
     }
@@ -133,9 +133,9 @@ describe('gcs automated payments calculation route', () => {
       fiscalYearId: validFiscalYearId,
       paymentType: 'advance',
       periodEnd: 3,
-      submittedAmount: 90.5,
+      submittedAmount: '90.50',
       releaseHoldback: true,
-      holdbackReleaseAmount: 5.25
+      holdbackReleaseAmount: '5.25'
     }, streamConfig)
   })
 })

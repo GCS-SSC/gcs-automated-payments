@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import type { Ref } from 'vue'
 import { type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
+import type { GcsPaymentAmountCalculatorResult } from '@gcs-ssc/extensions/ui'
 import {
   ExtensionAccordion,
   ExtensionBadge,
@@ -14,7 +15,10 @@ import {
 } from '@gcs-ssc/extensions/ui'
 import {
   EXTENSION_KEY,
-  type AutomatedPaymentCalculationResult
+  ZERO_AUTOMATED_PAYMENT_MONEY,
+  type AutomatedPaymentCalculationResult,
+  type AutomatedPaymentMoney,
+  tryParseAutomatedPaymentMoney
 } from '../shared/automated-payments'
 
 const {
@@ -32,11 +36,11 @@ const {
 }>()
 
 const emit = defineEmits<{
-  result: [value: Record<string, unknown>]
+  result: [value: GcsPaymentAmountCalculatorResult]
   extensionPayload: [value: Record<string, unknown>]
 }>()
 
-const { n, t } = useExtensionI18n()
+const { locale, t } = useExtensionI18n()
 const calculation: Ref<(AutomatedPaymentCalculationResult & { enabled?: boolean }) | null> = ref(null)
 const errorMessage: Ref<string | null> = ref(null)
 const isLoading: Ref<boolean> = ref(false)
@@ -109,10 +113,15 @@ const readErrorMessage = async (response: Response): Promise<string> => {
   return response.statusText || t('extensions.gcs_automated_payments.calculation_error')
 }
 
-const formatMoney = (value: number) => n(value, {
-  style: 'currency',
-  currency: 'CAD'
-})
+const formatMoney = (value: AutomatedPaymentMoney) => {
+  const [integer = '0', fraction = '00'] = value.split('.')
+  const negative = integer.startsWith('-')
+  const digits = negative ? integer.slice(1) : integer
+  const isFrench = locale.value === 'fr'
+  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, isFrench ? '\u00a0' : ',')
+  const amount = `${grouped}${isFrench ? ',' : '.'}${fraction}`
+  return isFrench ? `${negative ? '-' : ''}${amount}\u00a0$` : `${negative ? '-' : ''}$${amount}`
+}
 
 const calculationDetails = computed(() =>
   calculation.value?.details.map(detail => ({
@@ -120,6 +129,13 @@ const calculationDetails = computed(() =>
     value: detail.value
   })) ?? []
 )
+
+const serializedHoldbackReleaseAmount = computed(() => {
+  if (!releaseHoldback.value || holdbackReleaseAmount.value === '') {
+    return ZERO_AUTOMATED_PAYMENT_MONEY
+  }
+  return tryParseAutomatedPaymentMoney(holdbackReleaseAmount.value) ?? holdbackReleaseAmount.value
+})
 
 const requestBody = computed(() => ({
   egcs_fc_commitmenttype: model.commitmentType,
@@ -131,7 +147,7 @@ const requestBody = computed(() => ({
   extensions: {
     [EXTENSION_KEY]: {
       releaseHoldback: releaseHoldback.value,
-      holdbackReleaseAmount: holdbackReleaseAmount.value === '' ? 0 : Number(holdbackReleaseAmount.value)
+      holdbackReleaseAmount: serializedHoldbackReleaseAmount.value
     }
   }
 }))
@@ -147,21 +163,22 @@ const hasRequiredInputs = computed(() =>
 )
 
 const publishResult = () => {
-  emit('result', {
+  const result: GcsPaymentAmountCalculatorResult = {
     ceilingAmount: calculation.value?.ceilingAmount,
     suggestedAmount: calculation.value?.suggestedAmount,
     currency: calculation.value?.currency ?? 'CAD',
     details: calculation.value?.details ?? [],
     loading: isLoading.value,
     error: errorMessage.value
-  })
+  }
+  emit('result', result)
 }
 
 /** Recalculates the payment ceiling from the current form values and publishes the result. */
 const calculate = async () => {
   emit('extensionPayload', {
     releaseHoldback: releaseHoldback.value,
-    holdbackReleaseAmount: holdbackReleaseAmount.value === '' ? 0 : Number(holdbackReleaseAmount.value)
+    holdbackReleaseAmount: serializedHoldbackReleaseAmount.value
   })
 
   if (!hasRequiredInputs.value) {
@@ -226,9 +243,7 @@ watch(requestBody, calculate, { deep: true, immediate: true })
         :label="t('extensions.gcs_automated_payments.holdback_release_amount')">
         <ExtensionInput
           v-model="holdbackReleaseAmount"
-          type="number"
-          min="0"
-          step="0.01" />
+          inputmode="decimal" />
       </ExtensionFormField>
     </div>
 

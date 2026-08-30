@@ -37,11 +37,11 @@ const validBody = {
   egcs_fc_paymenttype: 'advance',
   egcs_fc_periodstart: 1,
   egcs_fc_periodend: 3,
-  egcs_fc_paymentamount: 100,
+  egcs_fc_paymentamount: '100.00',
   extensions: {
     'gcs-automated-payments': {
       releaseHoldback: true,
-      holdbackReleaseAmount: 10
+      holdbackReleaseAmount: '10.00'
     }
   }
 }
@@ -59,10 +59,10 @@ describe('gcs automated payments create hooks', () => {
     vi.stubGlobal('defineNitroPlugin', (plugin: unknown) => plugin)
     calculateAutomatedPaymentFromDbMock.mockResolvedValue({
       enabled: true,
-      ceilingAmount: 100,
-      holdbackReleaseAmount: 8
+      ceilingAmount: '100.00',
+      holdbackReleaseAmount: '8.00'
     })
-    getPaymentMetadataMock.mockResolvedValue({ releaseHoldback: true, holdbackReleaseAmount: 12 })
+    getPaymentMetadataMock.mockResolvedValue({ releaseHoldback: true, holdbackReleaseAmount: '12.00' })
   })
 
   it('registers the extension activation guard hook', async () => {
@@ -143,8 +143,8 @@ describe('gcs automated payments create hooks', () => {
   it('validates before-create payment amounts against the calculated ceiling', async () => {
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({
       enabled: true,
-      ceilingAmount: 50,
-      holdbackReleaseAmount: 0
+      ceilingAmount: '50.00',
+      holdbackReleaseAmount: '0.00'
     })
     const handler = await loadHandler()
 
@@ -162,9 +162,9 @@ describe('gcs automated payments create hooks', () => {
       agreementId: 'agreement-1',
       commitmentType: validCommitmentTypeId,
       fiscalYearId: validFiscalYearId,
-      submittedAmount: 100,
+      submittedAmount: '100.00',
       releaseHoldback: true,
-      holdbackReleaseAmount: 10
+      holdbackReleaseAmount: '10.00'
     }), { enabledPaymentTypes: ['advance'] })
   })
 
@@ -198,7 +198,7 @@ describe('gcs automated payments create hooks', () => {
     }), {})
     expect(savePaymentMetadataMock).toHaveBeenCalledWith(trx, 'payment-1', {
       releaseHoldback: true,
-      holdbackReleaseAmount: 8
+      holdbackReleaseAmount: '8.00'
     })
   })
 
@@ -227,7 +227,7 @@ describe('gcs automated payments create hooks', () => {
         egcs_fc_fiscalyear: 'fy-1',
         egcs_fc_paymenttype: 'advance',
         egcs_fc_periodend: 3,
-        egcs_fc_paymentamount: 40,
+        egcs_fc_paymentamount: '40.00',
         egcs_fc_fundingagreementcommitment: 'commitment-1'
       },
       { commitment_type: 'type-2', stream_id: 'stream-2' },
@@ -241,8 +241,8 @@ describe('gcs automated payments create hooks', () => {
     const db = { selectFrom: () => query }
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({
       enabled: true,
-      ceilingAmount: 50,
-      holdbackReleaseAmount: 12
+      ceilingAmount: '50.00',
+      holdbackReleaseAmount: '12.00'
     })
 
     await expect(guard({
@@ -252,15 +252,15 @@ describe('gcs automated payments create hooks', () => {
       paymentId: 'payment-1',
       changes: {
         egcs_fc_fundingagreementcommitment: 'commitment-2',
-        egcs_fc_paymentamount: 60
+        egcs_fc_paymentamount: '50.01'
       }
     })).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING' })
     expect(getPaymentMetadataMock).toHaveBeenCalledWith(db, 'payment-1')
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(db, expect.objectContaining({
       commitmentType: 'type-2',
       releaseHoldback: true,
-      holdbackReleaseAmount: 12,
-      submittedAmount: 60,
+      holdbackReleaseAmount: '12.00',
+      submittedAmount: '50.01',
       excludePaymentId: 'payment-1'
     }), { enabledPaymentTypes: ['advance'] })
   })
@@ -282,7 +282,7 @@ describe('gcs automated payments create hooks', () => {
         undefined
       ]
     }
-  ])('leaves $name outside the update ceiling guard', async ({ operation, responses }) => {
+  ])('leaves $name outside the update ceiling calculation', async ({ operation, responses }) => {
     await loadHandler()
     const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as
       (context: Record<string, unknown>) => Promise<void>
@@ -300,7 +300,30 @@ describe('gcs automated payments create hooks', () => {
       agreementId: 'agreement-1',
       paymentId: 'payment-1'
     })).resolves.toBeUndefined()
+    expect(lockAutomatedPaymentAgreementMock).toHaveBeenCalledWith(db, 'agreement-1')
     expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'payment.update',
+    'payment.delete',
+    'payment.status-change',
+    'payment-line.create',
+    'payment-line.update',
+    'payment-line.delete'
+  ])('takes the Agreement advisory lock before %s', async operation => {
+    await loadHandler()
+    const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as
+      (context: Record<string, unknown>) => Promise<void>
+    const query = new Proxy({}, {
+      get: (_target, property) => property === 'executeTakeFirst' ? async () => undefined : () => query
+    })
+    const db = { selectFrom: vi.fn(() => query) }
+
+    await guard({ operation, db, agreementId: 'agreement-1', paymentId: 'payment-1' })
+
+    expect(lockAutomatedPaymentAgreementMock).toHaveBeenCalledOnce()
+    expect(lockAutomatedPaymentAgreementMock).toHaveBeenCalledWith(db, 'agreement-1')
   })
 
   it('allows an enabled update whose persisted amount remains within the ceiling', async () => {
@@ -312,7 +335,7 @@ describe('gcs automated payments create hooks', () => {
         egcs_fc_fiscalyear: 'fy-1',
         egcs_fc_paymenttype: 'advance',
         egcs_fc_periodend: 3,
-        egcs_fc_paymentamount: 40,
+        egcs_fc_paymentamount: '50.00',
         egcs_fc_fundingagreementcommitment: 'commitment-1'
       },
       { commitment_type: 'type-1', stream_id: 'stream-1' },
@@ -326,8 +349,8 @@ describe('gcs automated payments create hooks', () => {
     const db = { selectFrom: () => query }
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({
       enabled: true,
-      ceilingAmount: 50,
-      holdbackReleaseAmount: 0
+      ceilingAmount: '50.00',
+      holdbackReleaseAmount: '0.00'
     })
 
     await expect(guard({
