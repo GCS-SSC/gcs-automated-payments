@@ -10,22 +10,22 @@ declare const moneyBrand: unique symbol
 export type AutomatedPaymentMoney = string & { readonly [moneyBrand]: true }
 export type AutomatedPaymentMoneyInput = string | number
 const MONEY_INPUT = /^-?(?:0|[1-9]\d*)(?:\.\d{1,2})?$/
-const MAX_ROW_CENTS = 9_999_999_999_999_999_999n
+const MAX_ROW_CENTS = BigInt('9999999999999999999')
 export const ZERO_AUTOMATED_PAYMENT_MONEY = '0.00' as AutomatedPaymentMoney
 
 const toCents = (value: string, bounded = false): bigint => {
   if (!MONEY_INPUT.test(value)) throw new TypeError('Money must be an exact decimal with at most two fractional digits.')
   const negative = value.startsWith('-')
   const [whole = '0', fraction = ''] = (negative ? value.slice(1) : value).split('.')
-  const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'))
+  const cents = BigInt(whole) * BigInt(100) + BigInt(fraction.padEnd(2, '0'))
   const signed = negative ? -cents : cents
   if (bounded && (signed > MAX_ROW_CENTS || signed < -MAX_ROW_CENTS)) throw new RangeError('Money exceeds numeric(19,2).')
   return signed
 }
 const fromCents = (cents: bigint): AutomatedPaymentMoney => {
-  const negative = cents < 0n
+  const negative = cents < BigInt(0)
   const absolute = negative ? -cents : cents
-  return `${negative ? '-' : ''}${absolute / 100n}.${String(absolute % 100n).padStart(2, '0')}` as AutomatedPaymentMoney
+  return `${negative ? '-' : ''}${absolute / BigInt(100)}.${String(absolute % BigInt(100)).padStart(2, '0')}` as AutomatedPaymentMoney
 }
 export const tryParseAutomatedPaymentMoney = (value: unknown): AutomatedPaymentMoney | null => {
   try {
