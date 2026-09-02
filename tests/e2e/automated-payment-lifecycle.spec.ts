@@ -60,7 +60,7 @@ type PaymentCoverageDetail = {
   egcs_fc_fiscalyear: string | number
   lines: Array<{
     egcs_fc_fundingagreementcommitmentline: string | number
-    egcs_fc_amount: number
+    egcs_fc_amount: string
   }>
 }
 
@@ -690,7 +690,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await page.getByRole('tab', { name: 'Payments' }).click()
     await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
     const paymentDialog = page.getByRole('dialog', { name: 'Add Payment' })
-    const lookupButtons = paymentDialog.locator('button[aria-label="Show popup"]')
+    const lookupButtons = paymentDialog.locator('button[aria-haspopup="listbox"]')
     await lookupButtons.nth(0).click()
     await page.getByRole('option', { name: /Commitment/ }).first().click()
     await lookupButtons.nth(1).click()
