@@ -4,7 +4,7 @@ import type { GcsExtensionRouteEvent } from '@gcs-ssc/extensions/server'
 const readBodyMock = vi.fn()
 const calculateAutomatedPaymentFromDbMock = vi.fn()
 const validCommitmentTypeId = '9223372036854775807'
-const validFiscalYearId = '00000000-0000-4000-8000-000000000001'
+const validFiscalYearId = '1'
 const validBody = {
   egcs_fc_commitmenttype: validCommitmentTypeId,
   egcs_fc_fiscalyear: validFiscalYearId,

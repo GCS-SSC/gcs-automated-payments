@@ -3,7 +3,6 @@ import {
   AutomatedPaymentCalculateSchema,
   AutomatedPaymentMoneySchema,
   AutomatedPaymentPositiveBigintIdSchema,
-  AutomatedPaymentUuidIdSchema,
   calculateAutomatedPaymentAmount,
   parseAutomatedPaymentExtensionPayload,
   sumAutomatedPaymentMoney,
@@ -17,7 +16,7 @@ const hostHoldbackSettings = {
 }
 
 const validCommitmentTypeId = '9223372036854775807'
-const validFiscalYearId = '00000000-0000-4000-8000-000000000001'
+const validFiscalYearId = '1'
 
 const baseInput = {
   paymentType: 'reimbursement',
@@ -251,18 +250,4 @@ describe('gcs automated payments calculation', () => {
     expect(AutomatedPaymentPositiveBigintIdSchema.safeParse(value).success).toBe(false)
   })
 
-  it('accepts a canonical UUID identifier', () => {
-    expect(AutomatedPaymentUuidIdSchema.parse(validFiscalYearId)).toBe(validFiscalYearId)
-  })
-
-  it.each([
-    { name: 'missing', value: undefined },
-    { name: 'null', value: null },
-    { name: 'empty', value: '' },
-    { name: 'malformed', value: 'fy-1' },
-    { name: 'a bigint-shaped string', value: '1' },
-    { name: 'repeated values', value: [validFiscalYearId, validFiscalYearId] }
-  ])('rejects $name UUID input', ({ value }) => {
-    expect(AutomatedPaymentUuidIdSchema.safeParse(value).success).toBe(false)
-  })
 })

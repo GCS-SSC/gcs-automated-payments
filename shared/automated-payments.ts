@@ -94,14 +94,13 @@ export const AutomatedPaymentPositiveBigintIdSchema = z.preprocess(value => {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
   return value
 }, z.string().refine(positiveBigint))
-export const AutomatedPaymentUuidIdSchema = z.uuid()
 export const AutomatedPaymentExtensionPayloadSchema = z.object({
   releaseHoldback: z.boolean().default(false),
   holdbackReleaseAmount: z.preprocess(value => value === '' || value === undefined || value === null ? ZERO_AUTOMATED_PAYMENT_MONEY : value, AutomatedPaymentMoneySchema.default(ZERO_AUTOMATED_PAYMENT_MONEY))
 }).transform(value => ({ releaseHoldback: value.releaseHoldback, holdbackReleaseAmount: value.releaseHoldback ? value.holdbackReleaseAmount : ZERO_AUTOMATED_PAYMENT_MONEY }))
 export const AutomatedPaymentCalculateSchema = z.object({
   egcs_fc_commitmenttype: AutomatedPaymentPositiveBigintIdSchema,
-  egcs_fc_fiscalyear: AutomatedPaymentUuidIdSchema,
+  egcs_fc_fiscalyear: AutomatedPaymentPositiveBigintIdSchema,
   egcs_fc_paymenttype: z.enum(automatedPaymentTypes),
   egcs_fc_periodstart: z.coerce.number().int().min(0).max(11),
   egcs_fc_periodend: z.coerce.number().int().min(0).max(11),

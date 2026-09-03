@@ -9,7 +9,7 @@ const getPaymentMetadataMock = vi.fn()
 const lockAutomatedPaymentAgreementMock = vi.fn()
 const guardAutomatedPaymentsActivationMock = vi.fn()
 const validCommitmentTypeId = '9223372036854775807'
-const validFiscalYearId = '00000000-0000-4000-8000-000000000001'
+const validFiscalYearId = '1'
 
 vi.mock('@gcs-ssc/extensions/server', () => ({
   createGcsExtensionUserError: (options: Record<string, unknown>) => Object.assign(new Error(String(options.message)), options),
