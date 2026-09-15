@@ -203,7 +203,7 @@ describe('automated payment amount calculator', () => {
     {
       name: 'non-Error rejection',
       rejection: 'calculation exploded',
-      expected: 'extensions.gcs_automated_payments.calculation_error'
+      expected: 'Unable to calculate the automated payment. Check the payment fields and try again.'
     }
   ])('normalizes a $name from the extension API', async ({ rejection, expected }) => {
     vi.stubGlobal('useI18n', () => ({
@@ -299,4 +299,19 @@ describe('automated payment amount calculator', () => {
       holdbackReleaseAmount: '4.2x'
     })
   })
+})
+
+it.each([
+  [{ data: { details: [null, { message: 'Champ invalide' }], message: 'Erreur' } }, 'Champ invalide'],
+  [{ data: { details: [{ message: '' }], message: 'Erreur du calcul' } }, 'Erreur du calcul'],
+  [{ message: 'Erreur serveur' }, 'Erreur serveur'],
+  [{ statusMessage: 'Statut traduit' }, 'Statut traduit'],
+  [null, 'Unable to calculate the automated payment. Check the payment fields and try again.'],
+  ['not JSON', 'Unable to calculate the automated payment. Check the payment fields and try again.']
+])('preserves response text and uses only its own fallback catalog', async (body, expected) => {
+  vi.stubGlobal('useI18n', () => ({ locale: ref('en'), t: () => { throw new Error('Host lookup forbidden') } }))
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new Response(typeof body === 'string' ? body : JSON.stringify(body), { status: 400 }) }))
+  const wrapper = mountCalculator({ commitmentType: 'commitment', fiscalYear: '1', paymentType: 'advance', periodStart: 1, periodEnd: 2, amount: 50 })
+  await flushPromises()
+  expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ error: expected })
 })

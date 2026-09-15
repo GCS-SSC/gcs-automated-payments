@@ -1,4 +1,6 @@
 <script setup lang="ts">
+
+import { messages } from '../i18n/messages'
 import { computed, ref, watch } from 'vue'
 import type { Ref } from 'vue'
 import { type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
@@ -40,7 +42,7 @@ const emit = defineEmits<{
   extensionPayload: [value: Record<string, unknown>]
 }>()
 
-const { locale, t } = useExtensionI18n()
+const { locale, t } = useExtensionI18n(messages)
 const calculation: Ref<(AutomatedPaymentCalculationResult & { enabled?: boolean }) | null> = ref(null)
 const errorMessage: Ref<string | null> = ref(null)
 const isLoading: Ref<boolean> = ref(false)
@@ -50,19 +52,19 @@ const holdbackReleaseAmount: Ref<string> = ref('')
 const api = useExtensionApi(extensionKey)
 const endpoint = computed(() => `/agreements/${context.agreementId}/calculate-payment`)
 
-const calculationDetailLabelKeys: Record<string, string> = {
-  baseAmount: 'extensions.gcs_automated_payments.details.base_amount',
-  commitmentRemaining: 'extensions.gcs_automated_payments.details.commitment_remaining',
-  availableBeforeHoldback: 'extensions.gcs_automated_payments.details.available_before_holdback',
-  holdbackReleaseAmount: 'extensions.gcs_automated_payments.details.holdback_release_amount',
-  totalClaimsToLastClaimMonth: 'extensions.gcs_automated_payments.details.total_claims_to_last_claim_month',
-  totalForecastToLastClaimMonth: 'extensions.gcs_automated_payments.details.total_forecast_to_last_claim_month',
-  totalForecastToPeriodEnd: 'extensions.gcs_automated_payments.details.total_forecast_to_period_end',
-  totalPaymentsToDate: 'extensions.gcs_automated_payments.details.total_payments_to_date'
+const calculationDetailLabelKeys: Record<string, keyof typeof messages.en> = {
+  baseAmount: 'details.base_amount',
+  commitmentRemaining: 'details.commitment_remaining',
+  availableBeforeHoldback: 'details.available_before_holdback',
+  holdbackReleaseAmount: 'details.holdback_release_amount',
+  totalClaimsToLastClaimMonth: 'details.total_claims_to_last_claim_month',
+  totalForecastToLastClaimMonth: 'details.total_forecast_to_last_claim_month',
+  totalForecastToPeriodEnd: 'details.total_forecast_to_period_end',
+  totalPaymentsToDate: 'details.total_payments_to_date'
 }
 
 const calculationDetailItems = computed(() => [{
-  label: t('extensions.gcs_automated_payments.calculation_details'),
+  label: t('calculation_details'),
   value: 'details',
   icon: 'i-lucide-list'
 }])
@@ -110,7 +112,7 @@ const readErrorMessage = async (response: Response): Promise<string> => {
     // Fall through to localized fallback when the response is not JSON.
   }
 
-  return response.statusText || t('extensions.gcs_automated_payments.calculation_error')
+  return response.statusText || t('calculation_error')
 }
 
 const formatMoney = (value: AutomatedPaymentMoney) => {
@@ -125,7 +127,7 @@ const formatMoney = (value: AutomatedPaymentMoney) => {
 
 const calculationDetails = computed(() =>
   calculation.value?.details.map(detail => ({
-    label: t(calculationDetailLabelKeys[detail.label] ?? detail.label),
+    label: calculationDetailLabelKeys[detail.label] ? t(calculationDetailLabelKeys[detail.label]!) : detail.label,
     value: detail.value
   })) ?? []
 )
@@ -198,7 +200,7 @@ const calculate = async () => {
     if (error instanceof Response) {
       errorMessage.value = await readErrorMessage(error)
     } else {
-      errorMessage.value = error instanceof Error ? error.message : t('extensions.gcs_automated_payments.calculation_error')
+      errorMessage.value = error instanceof Error ? error.message : t('calculation_error')
     }
   } finally {
     isLoading.value = false
@@ -214,10 +216,10 @@ watch(requestBody, calculate, { deep: true, immediate: true })
     <div class="flex items-center justify-between gap-3">
       <div>
         <h3 class="text-sm font-semibold text-highlighted">
-          {{ t('extensions.gcs_automated_payments.calculator_title') }}
+          {{ t('calculator_title') }}
         </h3>
         <p class="text-sm text-muted">
-          {{ t('extensions.gcs_automated_payments.calculator_description') }}
+          {{ t('calculator_description') }}
         </p>
       </div>
       <ExtensionBadge v-if="calculation" color="primary" variant="subtle">
@@ -227,11 +229,11 @@ watch(requestBody, calculate, { deep: true, immediate: true })
 
     <div class="grid gap-3 sm:grid-cols-2">
       <ExtensionFormField
-        :label="t('extensions.gcs_automated_payments.release_holdback')"
+        :label="t('release_holdback')"
         class="sm:col-span-2">
         <ExtensionCheckbox
           v-model="releaseHoldback"
-          :label="t('extensions.gcs_automated_payments.release_holdback_label')"
+          :label="t('release_holdback_label')"
           class="w-full"
           :ui="{
             label: 'leading-5'
@@ -240,7 +242,7 @@ watch(requestBody, calculate, { deep: true, immediate: true })
 
       <ExtensionFormField
         v-if="releaseHoldback"
-        :label="t('extensions.gcs_automated_payments.holdback_release_amount')">
+        :label="t('holdback_release_amount')">
         <ExtensionInput
           v-model="holdbackReleaseAmount"
           inputmode="decimal" />
@@ -249,7 +251,7 @@ watch(requestBody, calculate, { deep: true, immediate: true })
 
     <div v-if="isLoading" class="flex items-center gap-2 text-sm text-muted">
       <ExtensionIcon name="i-lucide-loader-circle" class="animate-spin" />
-      {{ t('extensions.gcs_automated_payments.calculating') }}
+      {{ t('calculating') }}
     </div>
     <p v-else-if="errorMessage" class="text-sm text-error">
       {{ errorMessage }}

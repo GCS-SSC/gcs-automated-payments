@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { messages } from '../i18n/messages'
 import { computed, ref, watch } from 'vue'
 import type { Ref } from 'vue'
 import type { GcsExtensionJsonConfig, GcsResolvedExtension } from '@gcs-ssc/extensions'
@@ -17,13 +18,13 @@ defineProps<{
 }>()
 
 const config = defineModel<GcsExtensionJsonConfig>({ required: true })
-const { t } = useExtensionI18n()
+const { t } = useExtensionI18n(messages)
 
 const localConfig: Ref<AutomatedPaymentsStreamConfig> = ref(parseAutomatedPaymentsStreamConfig(config.value))
 
 const paymentTypeOptions = computed(() => [
-  { label: t('enums.payment_type.reimbursement'), value: 'reimbursement' },
-  { label: t('enums.payment_type.advance'), value: 'advance' }
+  { label: t('paymentType.reimbursement'), value: 'reimbursement' },
+  { label: t('paymentType.advance'), value: 'advance' }
 ])
 
 watch(localConfig, value => {
@@ -52,15 +53,15 @@ const updatePaymentType = (paymentType: AutomatedPaymentType, enabled: boolean) 
     <section class="space-y-4">
       <div>
         <h3 class="text-base font-semibold text-highlighted">
-          {{ t('extensions.gcs_automated_payments.stream_defaults_title') }}
+          {{ t('stream_defaults_title') }}
         </h3>
         <p class="mt-1 text-sm text-muted">
-          {{ t('extensions.gcs_automated_payments.stream_defaults_description') }}
+          {{ t('stream_defaults_description') }}
         </p>
       </div>
 
       <div class="space-y-3">
-        <ExtensionFormField :label="t('extensions.gcs_automated_payments.enabled_payment_types')">
+        <ExtensionFormField :label="t('enabled_payment_types')">
           <div class="flex flex-wrap gap-3">
             <ExtensionCheckbox
               v-for="option in paymentTypeOptions"

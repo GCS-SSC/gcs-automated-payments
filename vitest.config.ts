@@ -2,6 +2,7 @@ import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
 
 export const AUTOMATED_PAYMENTS_COVERAGE_INCLUDE = [
+  'i18n/**/*.ts',
   'components/**/*.{ts,vue}',
   'extension.config.ts',
   'server/**/*.ts',
