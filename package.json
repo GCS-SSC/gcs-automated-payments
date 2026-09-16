@@ -8,13 +8,14 @@
     "test:unit": "vitest run --config vitest.config.ts",
     "test:integration:postgres": "vitest run --config vitest.postgres.config.ts",
     "test:coverage": "vitest run --coverage --config vitest.config.ts",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "test:audit": "vitest run --config vitest.audit.config.ts"
   },
   "peerDependencies": {
     "vue": "*"
   },
   "dependencies": {
-    "@gcs-ssc/extensions": "^0.3.0",
+    "@gcs-ssc/extensions": "^0.3.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {

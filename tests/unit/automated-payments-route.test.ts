@@ -23,7 +23,7 @@ vi.mock('../../server/calculation-data', () => ({
   calculateAutomatedPaymentFromDb: (...args: unknown[]) => calculateAutomatedPaymentFromDbMock(...args)
 }))
 
-const createRouteEvent = (context: GcsExtensionRouteEvent['context']): GcsExtensionRouteEvent => ({ context })
+const createRouteEvent = (context: GcsExtensionRouteEvent['context']): GcsExtensionRouteEvent => ({ context, node: { req: { headers: {} } } } as unknown as GcsExtensionRouteEvent)
 
 describe('gcs automated payments calculation route', () => {
   beforeEach(() => {

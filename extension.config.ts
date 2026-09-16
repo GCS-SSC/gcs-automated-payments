@@ -1,9 +1,12 @@
-import { defineGcsExtension } from '@gcs-ssc/extensions'
+import { defineGcsExtension, defineGcsAuditOwnership } from '@gcs-ssc/extensions'
 
 export default defineGcsExtension({
+  // Host-managed configuration, KV and secrets keep their host ownership rules.
+  auditOwnership: defineGcsAuditOwnership([]),
   key: 'gcs-automated-payments',
-  sdkVersion: '^0.3.0',
+  sdkVersion: '^0.3.2',
   requiredHostCapabilities: [
+    'audit-ownership',
     'stream-config-modal',
     'payment-amount-calculators',
     'server-handlers',
