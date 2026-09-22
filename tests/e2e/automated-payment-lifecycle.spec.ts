@@ -246,7 +246,7 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   }
 
   const existingResponse = await page.request.get(
-    `/api/transfer-payments/${programId}/streams/${target.streamId}/workflow-setups?page=1&limit=100`
+    `/api/transfer-payments/${programId}/streams/${target.streamId}/workflows?page=1&limit=100`
   )
   await expectOk(existingResponse, 'List allocation Workflows')
   const existing = await responseJson<{ items: Array<{ id: string | number, egcs_cn_entitytype: string, publicationState: string }> }>(existingResponse)
@@ -256,17 +256,15 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   )) return
 
   const templatesResponse = await page.request.get(
-    `/api/approval-templates?scopeType=transferpaymentstream&scopeId=${target.streamId}&page=1&limit=100`
+    `/api/agency/${target.agencyId}/approval-templates?page=1&limit=100`
   )
   await expectOk(templatesResponse, 'List Approval Templates')
   const templates = await responseJson<{ items: Array<{ id: string | number, publicationState: string }> }>(templatesResponse)
   const template = templates.items.find(item => item.publicationState === 'published')
-  if (!template) throw new Error('A published stream Approval Template is required.')
+  if (!template) throw new Error('A published Agency Approval Template is required.')
 
-  const createResponse = await page.request.post(`/api/transfer-payments/${programId}/streams/${target.streamId}/workflow-setups`, {
+  const createResponse = await page.request.post(`/api/agency/${target.agencyId}/workflows`, {
     data: {
-      egcs_cn_scopetype: 'transferpaymentstream',
-      egcs_cn_scopeid: target.streamId,
       egcs_cn_entitytype: `${OUTCOME_ALLOCATION_EXTENSION_KEY}:allocation-version`,
       egcs_cn_name_en: 'Outcome allocation approval',
       egcs_cn_name_fr: 'Approbation de la repartition des resultats',
@@ -284,7 +282,7 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   const workflowId = String(workflow.id)
 
   const memberResponse = await page.request.post(
-    `/api/transfer-payments/${programId}/streams/${target.streamId}/workflow-setups/${workflowId}/members`,
+    `/api/agency/${target.agencyId}/workflows/${workflowId}/members`,
     {
       data: {
         egcs_cn_sequence: 1,
@@ -300,9 +298,13 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   )
   await expectOk(memberResponse, 'Add allocation Approval member')
   const publishResponse = await page.request.post(
-    `/api/transfer-payments/${programId}/streams/${target.streamId}/workflow-setups/${workflowId}/publish`
+    `/api/agency/${target.agencyId}/workflows/${workflowId}/publish`
   )
   await expectOk(publishResponse, 'Publish allocation Workflow')
+  const linkResponse = await page.request.post(`/api/transfer-payments/${programId}/streams/${target.streamId}/workflows`, {
+    data: { egcs_tp_workflow: workflowId }
+  })
+  await expectOk(linkResponse, 'Link allocation Workflow to Stream')
 }
 
 test.describe.serial('Automated payment lifecycle', () => {
