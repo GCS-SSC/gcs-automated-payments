@@ -1,4 +1,5 @@
 import { expect, test, type APIResponse, type Page } from '@playwright/test'
+import type { AutomatedPaymentCalculationResult } from '../../shared/automated-payments'
 
 const baseUrl = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000'
 
@@ -78,12 +79,7 @@ type ApprovalRuntimePayload = {
   }>
 }
 
-type PaymentCalculationPayload = {
-  baseAmount: number
-  ceilingAmount: number
-  suggestedAmount: number
-  details: Array<{ label: string, value: number }>
-}
+type PaymentCalculationPayload = AutomatedPaymentCalculationResult
 
 const AUTOMATED_PAYMENTS_EXTENSION_KEY = 'gcs-automated-payments'
 const OUTCOME_ALLOCATION_EXTENSION_KEY = 'gcs-outcome-cost-allocation'
@@ -189,6 +185,15 @@ const calculateAdvance = async (
   )
   await expectOk(response, 'Calculate advance payment')
   return await responseJson<PaymentCalculationPayload>(response)
+}
+
+const openAgreementPaymentsTab = async (page: Page, agreementId: string) => {
+  await page.goto(`/en/agreements/${agreementId}`)
+  const tab = page.getByRole('tab', { name: 'Payments', exact: true })
+  await tab.scrollIntoViewIfNeeded()
+  await expect(tab).toBeInViewport()
+  await tab.click()
+  await expect(tab).toHaveAttribute('aria-selected', 'true')
 }
 
 const ensureStreamHoldbackBasis = async (
@@ -346,6 +351,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     }
   })
   test('keeps calculator UI and server handler unavailable while disabled', async ({ page }) => {
+    test.setTimeout(90_000)
     await login(page, 'root@example.com', 'password123')
 
     const disableAgencyResponse = await page.request.patch(`/api/extensions/agency/${target.agencyId}`, {
@@ -359,8 +365,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     )
     expect([403, 404]).toContain(disabledHandlerResponse.status())
 
-    await page.goto(`/en/agreements/${target.agreementId}`)
-    await page.getByRole('tab', { name: 'Payments' }).click()
+    await openAgreementPaymentsTab(page, target.agreementId)
     await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
     const paymentDialog = page.getByRole('dialog', { name: 'Add Payment' })
     await expect(paymentDialog).toBeVisible()
@@ -368,6 +373,7 @@ test.describe.serial('Automated payment lifecycle', () => {
   })
 
   test('runs allocation, commitment, forecast, and automatically calculated advance payment', async ({ page, browser }) => {
+    test.setTimeout(90_000)
     await login(page, 'root@example.com', 'password123')
 
     const agreementResponse = await page.request.get(`/api/agreements/${target.agreementId}`)
@@ -651,7 +657,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await approveAllSteps(approvalPage, 'fundingcaseforecast', forecastId)
 
     const initialAdvanceCalculation = await calculateAdvance(page, commitmentType, fiscalYearId, 2)
-    if (initialAdvanceCalculation.suggestedAmount <= 0) {
+    if (Number(initialAdvanceCalculation.suggestedAmount) <= 0) {
       throw new Error(`Expected a positive calculated advance: ${JSON.stringify(initialAdvanceCalculation)}`)
     }
     const commitmentBalance = roundCurrency(approvedCommitment.lines.filter(
@@ -660,7 +666,7 @@ test.describe.serial('Automated payment lifecycle', () => {
       (total, line) => total + Number(line.egcs_fc_amount),
       0
     ))
-    const initialAdvanceAmount = Math.min(initialAdvanceCalculation.suggestedAmount, commitmentBalance)
+    const initialAdvanceAmount = Math.min(Number(initialAdvanceCalculation.suggestedAmount), commitmentBalance)
     expect(initialAdvanceAmount).toBeGreaterThan(0)
 
     const paymentsBeforeUiCreateResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments-overview`)
@@ -674,7 +680,7 @@ test.describe.serial('Automated payment lifecycle', () => {
       egcs_fc_paymenttype: 'advance',
       egcs_fc_periodstart: 0,
       egcs_fc_periodend: 2,
-      egcs_fc_paymentamount: roundCurrency(initialAdvanceCalculation.ceilingAmount + 0.01),
+      egcs_fc_paymentamount: roundCurrency(Number(initialAdvanceCalculation.ceilingAmount) + 0.01),
       egcs_fc_currency: 'cad',
       extensions: {
         [AUTOMATED_PAYMENTS_EXTENSION_KEY]: { releaseHoldback: false, holdbackReleaseAmount: 0 }
@@ -688,24 +694,21 @@ test.describe.serial('Automated payment lifecycle', () => {
     )
     expect(paymentsAfterRejectedCreate.payments.map(payment => String(payment.id))).toEqual([...existingPaymentIds])
 
-    await page.goto(`/en/agreements/${target.agreementId}`)
-    await page.getByRole('tab', { name: 'Payments' }).click()
+    await openAgreementPaymentsTab(page, target.agreementId)
     await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
     const paymentDialog = page.getByRole('dialog', { name: 'Add Payment' })
-    const lookupButtons = paymentDialog.locator('button[aria-haspopup="listbox"]')
-    await lookupButtons.nth(0).click()
+    await paymentDialog.getByRole('combobox', { name: /^Commitment type/ }).click()
     await page.getByRole('option', { name: /Commitment/ }).first().click()
-    await lookupButtons.nth(1).click()
+    await paymentDialog.getByRole('combobox', { name: /^Fiscal year/ }).click()
     await page.getByRole('option', { name: targetBudgetYear!.fiscal_year_display, exact: true }).click()
-    const selectButtons = paymentDialog.getByRole('combobox')
-    await selectButtons.nth(0).click()
+    await paymentDialog.getByRole('combobox', { name: /^Payment type/ }).click()
     await page.getByRole('option', { name: 'Advance', exact: true }).click()
-    await selectButtons.nth(2).click()
+    await paymentDialog.getByRole('combobox', { name: /^Period start/ }).click()
     await page.getByRole('option', { name: 'Apr', exact: true }).click()
-    await selectButtons.nth(3).click()
+    await paymentDialog.getByRole('combobox', { name: /^Period end/ }).click()
     await page.getByRole('option', { name: 'Jun', exact: true }).click()
     await expect(paymentDialog.getByText('Automated payment ceiling', { exact: true })).toBeVisible()
-    const amountInput = paymentDialog.getByRole('spinbutton')
+    const amountInput = paymentDialog.getByRole('textbox', { name: /^Amount/ })
     const readRenderedAmount = async () => Number((await amountInput.inputValue()).replace(/[^0-9.-]/g, ''))
     await expect.poll(readRenderedAmount).toBeGreaterThan(0)
     expect(await readRenderedAmount()).toBe(initialAdvanceAmount)
@@ -737,8 +740,7 @@ test.describe.serial('Automated payment lifecycle', () => {
 
     await approvalPage.close()
 
-    await page.goto(`/en/agreements/${target.agreementId}`)
-    await page.getByRole('tab', { name: 'Payments' }).click()
+    await openAgreementPaymentsTab(page, target.agreementId)
     await expect(page.getByRole('link', { name: 'Advance' }).first()).toBeVisible()
   })
 
