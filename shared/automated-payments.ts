@@ -3,7 +3,7 @@ import { z } from 'zod'
 export const EXTENSION_KEY = 'gcs-automated-payments'
 const automatedPaymentTypes = ['reimbursement', 'advance'] as const
 export type AutomatedPaymentType = (typeof automatedPaymentTypes)[number]
-const holdbackBasisValues = ['agreement-total', 'final-fiscal-year'] as const
+const holdbackBasisValues = ['fullagreement', 'finalfiscal'] as const
 export type HoldbackBasis = (typeof holdbackBasisValues)[number]
 
 declare const moneyBrand: unique symbol
@@ -143,7 +143,7 @@ export const calculateAutomatedPaymentAmount = (input: AutomatedPaymentCalculati
   const base = input.paymentType === 'advance'
     ? subtractAutomatedPaymentMoney(addAutomatedPaymentMoney(subtractAutomatedPaymentMoney(claims, forecastLastClaim), forecastPeriodEnd), payments)
     : subtractAutomatedPaymentMoney(claims, payments)
-  const holdbackAmount = calculateLegacyDec041HoldbackAmount(settings.holdbackBasis === 'final-fiscal-year' ? finalFiscalYearTotal : agreementTotal, settings.holdbackPercent)
+  const holdbackAmount = calculateLegacyDec041HoldbackAmount(settings.holdbackBasis === 'finalfiscal' ? finalFiscalYearTotal : agreementTotal, settings.holdbackPercent)
   const remaining = maxZero(subtractAutomatedPaymentMoney(holdbackAmount, released))
   const requested = input.releaseHoldback ? parseAutomatedPaymentMoney(input.holdbackReleaseAmount ?? ZERO_AUTOMATED_PAYMENT_MONEY) : ZERO_AUTOMATED_PAYMENT_MONEY
   const holdbackReleaseAmount = minMoney([requested, remaining])

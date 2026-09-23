@@ -12,7 +12,7 @@ import { createAutomatedPaymentValidationError } from '../../server/errors'
 
 const hostHoldbackSettings = {
   holdbackPercent: 10,
-  holdbackBasis: 'agreement-total' as const
+  holdbackBasis: 'fullagreement' as const
 }
 
 const validCommitmentTypeId = '9223372036854775807'

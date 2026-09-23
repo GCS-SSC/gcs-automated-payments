@@ -74,7 +74,7 @@ const sumRows = (rows: Array<{ amount?: unknown }>): AutomatedPaymentMoney =>
 const sumPeriodRows = (rows: AmountPeriodRow[], position: PeriodPosition): AutomatedPaymentMoney =>
   sumAutomatedPaymentMoney(rows.filter(row => isOnOrBefore(row, position)).map(row => row.amount))
 
-/** Loads the agreement's holdback percentage and semantic agency holdback-basis code. */
+/** Loads the agreement's holdback percentage and agency holdback-basis type. */
 export const getAgreementHoldbackSettings = async (
   db: Db,
   agreementId: string
@@ -93,7 +93,7 @@ export const getAgreementHoldbackSettings = async (
     )
     .select([
       'Funding_Case_Agreement_Profile.egcs_fc_holdback',
-      'Agency_Holdback_Basis.egcs_ay_languageindependentcode as holdback_basis_code'
+      'Agency_Holdback_Basis.egcs_ay_holdbackbasis as holdback_basis_type'
     ])
     .where('Funding_Case_Agreement_Profile.id', '=', agreementId)
     .where('Funding_Case_Agreement_Profile._deleted', '=', false)
@@ -101,16 +101,16 @@ export const getAgreementHoldbackSettings = async (
     .where('Agency_Holdback_Basis._deleted', '=', false)
     .executeTakeFirst() as {
       egcs_fc_holdback?: unknown
-      holdback_basis_code?: unknown
+      holdback_basis_type?: unknown
     } | undefined
 
-  if (row?.holdback_basis_code !== 'agreement-total' && row?.holdback_basis_code !== 'final-fiscal-year') {
+  if (row?.holdback_basis_type !== 'fullagreement' && row?.holdback_basis_type !== 'finalfiscal') {
     throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_UNSUPPORTED_HOLDBACK_BASIS')
   }
 
   return {
     holdbackPercent: Number(row?.egcs_fc_holdback ?? 0),
-    holdbackBasis: row.holdback_basis_code
+    holdbackBasis: row.holdback_basis_type
   }
 }
 
@@ -600,7 +600,7 @@ export const calculateAutomatedPaymentFromDb = async (
     return row.fiscalYearOrder === selectedPosition.fiscalYearOrder && row.month > latestClaimMonthInSelectedFiscalYear
   }).map(row => row.amount))
   const legacyHoldback = calculateLegacyDec041HoldbackAmount(
-    holdbackSettings.holdbackBasis === 'final-fiscal-year' ? budgetTotals.finalFiscalYearTotal : budgetTotals.agreementTotal,
+    holdbackSettings.holdbackBasis === 'finalfiscal' ? budgetTotals.finalFiscalYearTotal : budgetTotals.agreementTotal,
     holdbackSettings.holdbackPercent
   )
   const availableForDisbursementBeforeHoldback = subtractAutomatedPaymentMoney(

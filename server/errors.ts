@@ -137,14 +137,14 @@ export const createAutomatedPaymentUserError = (
     : undefined
 })
 
-/** Creates an actionable bilingual activation error listing missing language-independent codes. */
+/** Creates an actionable bilingual activation error listing missing holdback-basis types. */
 export const createAutomatedPaymentsMissingHoldbackBasesError = (
-  missingCodes: string[]
+  missingTypes: string[]
 ) => {
-  const codes = missingCodes.join(', ')
+  const types = missingTypes.join(', ')
   const message: GcsExtensionLocalizedMessage = {
-    en: `Automated payments cannot be enabled. Add active stream holdback bases for these agency holdback-basis codes: ${codes}.`,
-    fr: `Les paiements automatises ne peuvent pas etre actives. Ajoutez des bases de retenue actives au volet pour les codes de base de retenue de l organisme suivants : ${codes}.`
+    en: `Automated payments cannot be enabled. Add active stream holdback bases for these agency holdback-basis types: ${types}.`,
+    fr: `Les paiements automatises ne peuvent pas etre actives. Ajoutez des bases de retenue actives au volet pour les types de base de retenue de l organisme suivants : ${types}.`
   }
 
   return createLocalizedUserError({

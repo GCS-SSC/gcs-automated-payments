@@ -69,15 +69,15 @@ describe('automated payment calculation data', () => {
       expect(query).toContain(".where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)")
     }
   })
-  it('derives final-fiscal-year from the agency language-independent code', async () => {
+  it('derives finalfiscal from the Agency enum independently of the custom basis code', async () => {
     const db = createQuery({
       egcs_fc_holdback: 12.5,
-      holdback_basis_code: 'final-fiscal-year'
+      holdback_basis_type: 'finalfiscal'
     })
 
     await expect(getAgreementHoldbackSettings(db as never, 'agreement-1')).resolves.toEqual({
       holdbackPercent: 12.5,
-      holdbackBasis: 'final-fiscal-year'
+      holdbackBasis: 'finalfiscal'
     })
     expect(db.innerJoin).toHaveBeenCalledWith(
       'Transfer_Payment_Stream_Holdback_Basis',
@@ -91,22 +91,22 @@ describe('automated payment calculation data', () => {
     )
   })
 
-  it('uses agreement-total for that semantic code without comparing the foreign-key id', async () => {
+  it('uses fullagreement for that semantic type without comparing the foreign-key id', async () => {
     const db = createQuery({
       egcs_fc_holdback: '10',
-      holdback_basis_code: 'agreement-total'
+      holdback_basis_type: 'fullagreement'
     })
 
     await expect(getAgreementHoldbackSettings(db as never, 'agreement-1')).resolves.toEqual({
       holdbackPercent: 10,
-      holdbackBasis: 'agreement-total'
+      holdbackBasis: 'fullagreement'
     })
   })
 
-  it('fails closed when the agreement basis does not resolve to a supported semantic code', async () => {
+  it('fails closed when the agreement basis does not resolve to a supported semantic type', async () => {
     const db = createQuery({
       egcs_fc_holdback: 10,
-      holdback_basis_code: 'custom-basis'
+      holdback_basis_type: 'custom-basis'
     })
 
     await expect(getAgreementHoldbackSettings(db as never, 'agreement-1')).rejects.toMatchObject({
@@ -140,7 +140,7 @@ describe('automated payment calculation data', () => {
         { amount: '50.00', fiscal_year_order: 2027 }
       ],
       Funding_Case_Agreement_Profile: {
-        egcs_fc_holdback: '10', holdback_basis_code: 'final-fiscal-year'
+        egcs_fc_holdback: '10', holdback_basis_type: 'finalfiscal'
       },
       'extensions.kv_entry': [
         { value: { releaseHoldback: true, holdbackReleaseAmount: '2.00' } }
@@ -187,7 +187,7 @@ describe('automated payment calculation data', () => {
       Funding_Case_Agreement_Commitment_Line: [],
       Funding_Case_Agreement_Budget_Line_Item: [],
       Funding_Case_Agreement_Profile: {
-        egcs_fc_holdback: 0, holdback_basis_code: 'agreement-total'
+        egcs_fc_holdback: 0, holdback_basis_type: 'fullagreement'
       }
     })
 
@@ -217,7 +217,7 @@ describe('automated payment calculation data', () => {
       Funding_Case_Agreement_Commitment_Line: [{ id: undefined, amount: 5 }],
       Funding_Case_Agreement_Budget_Line_Item: [{ amount: undefined, fiscal_year_order: undefined }],
       Funding_Case_Agreement_Profile: {
-        egcs_fc_holdback: undefined, holdback_basis_code: 'agreement-total'
+        egcs_fc_holdback: undefined, holdback_basis_type: 'fullagreement'
       }
     })
 

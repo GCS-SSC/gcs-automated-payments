@@ -199,29 +199,29 @@ const openAgreementPaymentsTab = async (page: Page, agreementId: string) => {
 const ensureStreamHoldbackBasis = async (
   page: Page,
   programId: string,
-  code: string
+  basis: string
 ): Promise<IdRow> => {
   const streamBasesResponse = await page.request.get(
     `/api/transfer-payments/${programId}/streams/${target.streamId}/holdback-bases?page=1&limit=100`
   )
   await expectOk(streamBasesResponse, 'List stream holdback bases')
   const streamBases = await responseJson<{
-    items: Array<IdRow & { egcs_ay_languageindependentcode: string }>
+    items: Array<IdRow & { egcs_ay_holdbackbasis: string }>
   }>(streamBasesResponse)
-  const existing = streamBases.items.find(item => item.egcs_ay_languageindependentcode === code)
+  const existing = streamBases.items.find(item => item.egcs_ay_holdbackbasis === basis)
   if (existing) return existing
 
   const agencyBasesResponse = await page.request.get(`/api/agency/${target.agencyId}/holdback-bases?page=1&limit=100`)
   await expectOk(agencyBasesResponse, 'List agency holdback bases')
   const agencyBases = await responseJson<{
     items: Array<IdRow & {
-      egcs_ay_languageindependentcode: string
+      egcs_ay_holdbackbasis: string
       egcs_ay_name_en: string
       egcs_ay_name_fr: string
     }>
   }>(agencyBasesResponse)
-  const agencyBasis = agencyBases.items.find(item => item.egcs_ay_languageindependentcode === code)
-  if (!agencyBasis) throw new Error(`Agency holdback basis ${code} is unavailable.`)
+  const agencyBasis = agencyBases.items.find(item => item.egcs_ay_holdbackbasis === basis)
+  if (!agencyBasis) throw new Error(`Agency holdback basis ${basis} is unavailable.`)
 
   const createResponse = await page.request.post(
     `/api/transfer-payments/${programId}/streams/${target.streamId}/holdback-bases`,
@@ -231,7 +231,7 @@ const ensureStreamHoldbackBasis = async (
       }
     }
   )
-  await expectOk(createResponse, `Create stream holdback basis ${code}`)
+  await expectOk(createResponse, `Create stream holdback basis ${basis}`)
   return await responseJson<IdRow>(createResponse)
 }
 
@@ -445,7 +445,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     })
     await expectOk(allocationMigrationResponse, 'Apply outcome allocation migrations')
 
-    await ensureStreamHoldbackBasis(page, agreement.program_id, 'final-fiscal-year')
+    await ensureStreamHoldbackBasis(page, agreement.program_id, 'finalfiscal')
 
     const streamConfigResponse = await page.request.patch(`/api/extensions/streams/${target.streamId}`, {
       data: {
@@ -772,7 +772,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await expect(page.getByRole('button', { name: 'Basculer la navigation' })).toBeVisible()
   })
 
-  test('refuses stream activation with an actionable list of missing holdback basis codes', async ({ page }) => {
+  test('requires holdback basis types and accepts a custom Agency code for finalfiscal', async ({ page }) => {
     await login(page, 'root@example.com', 'password123')
 
     const enableAgencyResponse = await page.request.patch(`/api/extensions/agency/${target.agencyId}`, {
@@ -794,18 +794,18 @@ test.describe.serial('Automated payment lifecycle', () => {
     )
     await expectOk(basesResponse, 'List stream holdback bases')
     const bases = await responseJson<{
-      items: Array<{ id: string; egcs_ay_languageindependentcode: string }>
+      items: Array<{ id: string; egcs_ay_holdbackbasis: string }>
     }>(basesResponse)
     const finalFiscalYearBasis = bases.items.find(
-      item => item.egcs_ay_languageindependentcode === 'final-fiscal-year'
+      item => item.egcs_ay_holdbackbasis === 'finalfiscal'
     )
     const ensuredBasis = finalFiscalYearBasis
-      ?? await ensureStreamHoldbackBasis(page, agreement.program_id, 'final-fiscal-year')
+      ?? await ensureStreamHoldbackBasis(page, agreement.program_id, 'finalfiscal')
 
     const deleteBasisResponse = await page.request.delete(
       `/api/transfer-payments/${agreement.program_id}/streams/${target.streamId}/holdback-bases/${ensuredBasis.id}`
     )
-    await expectOk(deleteBasisResponse, 'Delete required final-fiscal-year holdback basis')
+    await expectOk(deleteBasisResponse, 'Delete required finalfiscal holdback basis')
 
     const activationResponse = await page.request.patch(`/api/extensions/streams/${target.streamId}`, {
       data: {
@@ -823,11 +823,40 @@ test.describe.serial('Automated payment lifecycle', () => {
       }
     }>(activationResponse)
     expect(activationError.data.code).toBe('GCS_AUTOMATED_PAYMENTS_MISSING_HOLDBACK_BASES')
-    expect(activationError.data.message).toContain('final-fiscal-year')
+    expect(activationError.data.message).toContain('finalfiscal')
     expect(activationError.data.details).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: 'holdbackBases' })
     ]))
 
-    await ensureStreamHoldbackBasis(page, agreement.program_id, 'final-fiscal-year')
+    const customBasisResponse = await page.request.post(`/api/agency/${target.agencyId}/holdback-bases`, {
+      data: {
+        egcs_ay_languageindependentcode: 'automated-payments-custom-finalfiscal',
+        egcs_ay_holdbackbasis: 'finalfiscal',
+        egcs_ay_name_en: 'Automated payments final fiscal year',
+        egcs_ay_name_fr: 'Dernier exercice des paiements automatises'
+      }
+    })
+    await expectOk(customBasisResponse, 'Create custom finalfiscal Agency basis')
+    const customBasis = await responseJson<IdRow & {
+      egcs_ay_languageindependentcode: string
+      egcs_ay_holdbackbasis: string
+    }>(customBasisResponse)
+    expect(customBasis.egcs_ay_languageindependentcode).toBe('automated-payments-custom-finalfiscal')
+    expect(customBasis.egcs_ay_holdbackbasis).toBe('finalfiscal')
+
+    const customStreamBasisResponse = await page.request.post(
+      `/api/transfer-payments/${agreement.program_id}/streams/${target.streamId}/holdback-bases`,
+      { data: { egcs_tp_agencyholdback: String(customBasis.id) } }
+    )
+    await expectOk(customStreamBasisResponse, 'Assign custom finalfiscal basis to stream')
+
+    const activateWithCustomCodeResponse = await page.request.patch(`/api/extensions/streams/${target.streamId}`, {
+      data: {
+        extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY,
+        enabled: true,
+        config: { enabledPaymentTypes: ['advance', 'reimbursement'] }
+      }
+    })
+    await expectOk(activateWithCustomCodeResponse, 'Activate automated payments with a custom finalfiscal code')
   })
 })
