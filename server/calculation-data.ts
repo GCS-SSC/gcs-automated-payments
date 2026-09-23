@@ -432,19 +432,14 @@ const getCommitmentRemaining = async (
       'Funding_Case_Agreement_Commitment_Line.egcs_fc_transferpaymentstreamchartofaccount'
     )
     .innerJoin(
-      'Transfer_Payment_Stream_Budget',
-      'Transfer_Payment_Stream_Budget.id',
-      'Transfer_Payment_Stream_Chart_of_Account.egcs_tp_streambudget'
-    )
-    .innerJoin(
-      'Transfer_Payment_Fiscal_Year_Budget',
-      'Transfer_Payment_Fiscal_Year_Budget.id',
-      'Transfer_Payment_Stream_Budget.egcs_tp_transferpaymentbudget'
+      'Agency_Chart_of_Account',
+      'Agency_Chart_of_Account.id',
+      'Transfer_Payment_Stream_Chart_of_Account.egcs_tp_agencychartofaccount'
     )
     .innerJoin(
       'Funding_Case_Agreement_Budget_Fiscal_Year',
       'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear',
-      'Transfer_Payment_Fiscal_Year_Budget.egcs_tp_fiscalyear'
+      'Agency_Chart_of_Account.egcs_ay_fiscalyear'
     )
     .innerJoin('Funding_Case_Agreement_Budget_Version', 'Funding_Case_Agreement_Budget_Version.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_budgetversion')
     .select([
@@ -458,8 +453,7 @@ const getCommitmentRemaining = async (
     .where('Funding_Case_Agreement_Commitment._deleted', '=', false)
     .where('Funding_Case_Agreement_Commitment_Line._deleted', '=', false)
     .where('Transfer_Payment_Stream_Chart_of_Account._deleted', '=', false)
-    .where('Transfer_Payment_Stream_Budget._deleted', '=', false)
-    .where('Transfer_Payment_Fiscal_Year_Budget._deleted', '=', false)
+    .where('Agency_Chart_of_Account._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
     .where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)

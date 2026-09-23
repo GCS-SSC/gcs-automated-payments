@@ -160,6 +160,22 @@ describe('automated payment calculation data', () => {
     ]))
     expect(queries.get('Funding_Case_Agreement_Payment')?.where)
       .toHaveBeenCalledWith('Funding_Case_Agreement_Payment.id', '!=', '21')
+    const commitmentQuery = queries.get('Funding_Case_Agreement_Commitment_Line')
+    expect(commitmentQuery?.innerJoin).toHaveBeenCalledWith(
+      'Agency_Chart_of_Account',
+      'Agency_Chart_of_Account.id',
+      'Transfer_Payment_Stream_Chart_of_Account.egcs_tp_agencychartofaccount'
+    )
+    expect(commitmentQuery?.innerJoin).toHaveBeenCalledWith(
+      'Funding_Case_Agreement_Budget_Fiscal_Year',
+      'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear',
+      'Agency_Chart_of_Account.egcs_ay_fiscalyear'
+    )
+    expect(commitmentQuery?.innerJoin).not.toHaveBeenCalledWith(
+      'Transfer_Payment_Stream_Budget', expect.anything(), expect.anything()
+    )
+    expect(commitmentQuery?.where).toHaveBeenCalledWith('Agency_Chart_of_Account._deleted', '=', false)
+    expect(commitmentQuery?.where).toHaveBeenCalledWith('Transfer_Payment_Stream_Chart_of_Account._deleted', '=', false)
   })
 
   it('handles no prior claims, payments, or commitment value without optional queries', async () => {

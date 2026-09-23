@@ -227,9 +227,7 @@ const ensureStreamHoldbackBasis = async (
     `/api/transfer-payments/${programId}/streams/${target.streamId}/holdback-bases`,
     {
       data: {
-        egcs_tp_agencyholdback: String(agencyBasis.id),
-        egcs_tp_name_en: agencyBasis.egcs_ay_name_en,
-        egcs_tp_name_fr: agencyBasis.egcs_ay_name_fr
+        egcs_tp_agencyholdback: String(agencyBasis.id)
       }
     }
   )
