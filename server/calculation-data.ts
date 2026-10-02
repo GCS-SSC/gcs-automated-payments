@@ -462,7 +462,7 @@ export const calculateAutomatedPaymentFromDb = async (
   db: Db,
   input: AutomatedPaymentServerInput,
   streamConfig: unknown,
-  agreementFinancials: Pick<GcsExtensionAgreementFinancials, 'getCommitmentPaymentCapacity'>
+  agreementFinancials: Pick<GcsExtensionAgreementFinancials, 'getCommitmentPaymentCapacity' | 'getRecordedPaidToDate'>
 ): Promise<AutomatedPaymentServerCalculation> => {
   const config = parseAutomatedPaymentsStreamConfig(streamConfig)
   if (!config.enabledPaymentTypes.includes(input.paymentType)) {
@@ -486,7 +486,8 @@ export const calculateAutomatedPaymentFromDb = async (
     paymentRows,
     commitmentRemaining,
     budgetTotals,
-    holdbackSettings
+    holdbackSettings,
+    recordedPaid
   ] = await Promise.all([
     getClaimRows(db, input.agreementId),
     getForecastRows(db, input.agreementId),
@@ -497,14 +498,16 @@ export const calculateAutomatedPaymentFromDb = async (
       ...(input.excludePaymentId ? { excludePaymentId: input.excludePaymentId } : {})
     }).then(result => parseDatabaseAggregateMoney(result.capacityAmount)),
     getBudgetTotals(db, input.agreementId, selectedPosition),
-    getAgreementHoldbackSettings(db, input.agreementId)
+    getAgreementHoldbackSettings(db, input.agreementId),
+    agreementFinancials.getRecordedPaidToDate({ fiscalYearId: input.fiscalYearId, periodEnd: input.periodEnd,
+      ...(input.excludePaymentId ? { excludePaymentId: input.excludePaymentId } : {}) })
   ])
   const lastClaimPosition = getLastClaimPosition(claimRows, selectedPosition)
   const claimCutoff = lastClaimPosition ?? { fiscalYearOrder: selectedPosition.fiscalYearOrder, month: -1 }
   const totalClaimsToLastClaimMonth = sumPeriodRows(claimRows, claimCutoff)
   const totalForecastToLastClaimMonth = lastClaimPosition ? sumPeriodRows(forecastRows, lastClaimPosition) : ZERO_AUTOMATED_PAYMENT_MONEY
   const totalForecastToPeriodEnd = sumPeriodRows(forecastRows, selectedPosition)
-  const totalPaymentsToDate = sumPeriodRows(paymentRows, selectedPosition)
+  const totalPaymentsToDate = parseDatabaseAggregateMoney(recordedPaid.recordedPaidAmount)
   const forecastUnclaimedCurrentFiscalYear = sumAutomatedPaymentMoney(forecastRows.filter(row => {
     const latestClaimMonthInSelectedFiscalYear = lastClaimPosition?.fiscalYearOrder === selectedPosition.fiscalYearOrder
       ? lastClaimPosition.month

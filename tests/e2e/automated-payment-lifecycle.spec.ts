@@ -1,5 +1,6 @@
 import { expect, test, type APIResponse, type Page } from '@playwright/test'
 import { addAutomatedPaymentMoney, subtractAutomatedPaymentMoney, parseAutomatedPaymentMoney, type AutomatedPaymentCalculationResult } from '../../shared/automated-payments'
+import { deleteUnsubmittedCommitmentDrafts, postNegativeCorrection } from './correction-fixture'
 
 const baseUrl = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000'
 
@@ -453,6 +454,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     const retainedPaymentsResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments-overview`)
     await expectOk(retainedPaymentsResponse, 'Fetch retained seeded payments')
     const retainedPayments = await responseJson<{ payments: IdRow[] }>(retainedPaymentsResponse)
+    await deleteUnsubmittedCommitmentDrafts(page, target)
     const paidByYearAndChart = new Map<string, number>()
     for (const payment of retainedPayments.payments) {
       const paymentResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments/${payment.id}`)
@@ -875,6 +877,21 @@ test.describe.serial('Automated payment lifecycle', () => {
     await completeEntity(page, 'fundingcasejournalvoucher', String(reversal.id), 'Restore shared capacity baseline.')
     expect(await readCapacity()).toBe(capacityBefore)
 
+    // The accounting date is October (fiscal period six); earlier June totals retain their historical cutoff.
+    const calculationBeforeCorrection = await calculateAdvance(page, commitmentType, fiscalYearId, 6)
+    const paidBeforeCorrection = calculationBeforeCorrection.details.find(detail => detail.label === 'totalPaymentsToDate')!.value
+    const allocationBeforeCorrection = await responseJson<unknown>(await page.request.get(`/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`))
+    const postedCorrection = await postNegativeCorrection(page, approvalPage, target, commitmentId, advancePaymentId)
+    const calculationAfterCorrection = await calculateAdvance(page, commitmentType, fiscalYearId, 6)
+    expect(calculationAfterCorrection.details.find(detail => detail.label === 'totalPaymentsToDate')!.value)
+      .toBe(subtractAutomatedPaymentMoney(parseAutomatedPaymentMoney(paidBeforeCorrection), parseAutomatedPaymentMoney('1.00')))
+    const capacityAfterCorrection = addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('1.00'))
+    expect(await readCapacity()).toBe(capacityAfterCorrection)
+    expect(await responseJson(await page.request.get(`/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`))).toEqual(allocationBeforeCorrection)
+    await page.goto(`/en/agreements/${target.agreementId}/corrections/${postedCorrection.id}`)
+    await expect(page.getByRole('tab', { name: 'Correction Completion', exact: true })).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('posted-correction-automated-paid-to-date.png'), fullPage: true })
+
     // Spend the newly restored coding capacity through the other extension's real Payment generator.
     const replacementResponse = await page.request.post('/api/journal-vouchers', { data: {
       egcs_fc_payment: advancePaymentId, egcs_fc_replacementof: String(reversal.id),
@@ -884,7 +901,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     const replacement = await responseJson<IdRow>(replacementResponse)
     await expectOk(await page.request.patch(`/api/journal-vouchers/${replacement.id}`, { data: correctedAllocations }), 'Save replacement splits')
     await completeEntity(page, 'fundingcasejournalvoucher', String(replacement.id), 'Replacement capacity fixture.')
-    const payableCapacity = addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00'))
+    const payableCapacity = addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityAfterCorrection), parseAutomatedPaymentMoney('10.00'))
     expect(await readCapacity()).toBe(payableCapacity)
     await expectOk(await page.request.patch(`/api/extensions/streams/${target.streamId}`, { data: {
       extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: true, config: { enabledPaymentTypes: ['advance'] }
