@@ -28,11 +28,25 @@ const baseInput = {
   commitmentRemaining: '1000.00',
   agreementTotal: '2000.00',
   finalFiscalYearTotal: '500.00',
-  availableForDisbursementBeforeHoldback: '1000.00',
-  holdbackAlreadyReleased: '0.00'
+  availableForDisbursementBeforeHoldback: '1200.00'
 } as AutomatedPaymentCalculationInput
 
 describe('gcs automated payments calculation', () => {
+  it.each([
+    { currency: 'cad', funding: '125.55', reserve: '12.00', ceiling: '113.55' },
+    { currency: 'usd', funding: '84.46', reserve: '8.00', ceiling: '76.46' }
+  ])('keeps $currency native money and rounds its reserve independently', ({ currency, funding, reserve, ceiling }) => {
+    const result = calculateAutomatedPaymentAmount({ ...baseInput, currency,
+      totalClaimsToLastClaimMonth: funding, totalPaymentsToDate: '0.00', agreementTotal: funding,
+      availableForDisbursementBeforeHoldback: funding }, hostHoldbackSettings)
+    expect(result).toMatchObject({ currency: currency.toUpperCase(), holdbackAmount: reserve, ceilingAmount: ceiling, suggestedAmount: ceiling })
+  })
+
+  it('retains the historical CAD default only when calculation currency is omitted', () => {
+    const result = calculateAutomatedPaymentAmount(baseInput, hostHoldbackSettings)
+    expect(result.currency).toBe('CAD')
+  })
+
   it('calculates reimbursement ceiling from claims minus payments', () => {
     const result = calculateAutomatedPaymentAmount(baseInput, hostHoldbackSettings)
 
@@ -100,7 +114,7 @@ describe('gcs automated payments calculation', () => {
       ...baseInput,
       totalClaimsToLastClaimMonth: '2000.00', totalPaymentsToDate: '850.00',
       commitmentRemaining: '2000.00', agreementTotal: '1000.00',
-      finalFiscalYearTotal: '1000.00', availableForDisbursementBeforeHoldback: '50.00'
+      finalFiscalYearTotal: '1000.00', availableForDisbursementBeforeHoldback: '150.00'
     } as AutomatedPaymentCalculationInput, hostHoldbackSettings)
 
     expect(result.availableBeforeHoldback).toBe('50.00')
@@ -112,7 +126,7 @@ describe('gcs automated payments calculation', () => {
       ...baseInput,
       totalClaimsToLastClaimMonth: '2000.00', totalPaymentsToDate: '850.00',
       commitmentRemaining: '2000.00', agreementTotal: '1000.00',
-      finalFiscalYearTotal: '1000.00', availableForDisbursementBeforeHoldback: '50.00',
+      finalFiscalYearTotal: '1000.00', availableForDisbursementBeforeHoldback: '150.00',
       releaseHoldback: true,
       holdbackReleaseAmount: '25.00'
     } as AutomatedPaymentCalculationInput, hostHoldbackSettings)
@@ -121,20 +135,52 @@ describe('gcs automated payments calculation', () => {
     expect(result.ceilingAmount).toBe('75.00')
   })
 
-  it('limits full holdback release to unreleased holdback remaining', () => {
+  it('limits elected release to the full recurring reserve without tracking prior releases', () => {
     const result = calculateAutomatedPaymentAmount({
       ...baseInput,
       totalClaimsToLastClaimMonth: '2000.00', totalPaymentsToDate: '850.00',
       commitmentRemaining: '2000.00', agreementTotal: '1000.00',
-      finalFiscalYearTotal: '1000.00', availableForDisbursementBeforeHoldback: '50.00',
-      holdbackAlreadyReleased: '40.00',
+      finalFiscalYearTotal: '1000.00', availableForDisbursementBeforeHoldback: '150.00',
       releaseHoldback: true,
       holdbackReleaseAmount: '500.00'
     } as AutomatedPaymentCalculationInput, hostHoldbackSettings)
 
     expect(result.holdbackAmount).toBe('100.00')
-    expect(result.holdbackReleaseAmount).toBe('60.00')
-    expect(result.ceilingAmount).toBe('110.00')
+    expect(result.holdbackReleaseAmount).toBe('100.00')
+    expect(result.ceilingAmount).toBe('150.00')
+  })
+
+  it.each([
+    { paid: '0.00', unpaid: '1000.00', request: '0.00', ordinary: '900.00', release: '0.00', expected: '900.00' },
+    { paid: '700.00', unpaid: '300.00', request: '50.00', ordinary: '200.00', release: '50.00', expected: '250.00' },
+    { paid: '950.00', unpaid: '50.00', request: '0.00', ordinary: '0.00', release: '0.00', expected: '0.00' },
+    { paid: '950.00', unpaid: '50.00', request: '25.00', ordinary: '0.00', release: '25.00', expected: '25.00' },
+    { paid: '950.00', unpaid: '50.00', request: '100.00', ordinary: '0.00', release: '50.00', expected: '50.00' },
+    { paid: '1000.00', unpaid: '0.00', request: '100.00', ordinary: '0.00', release: '0.00', expected: '0.00' },
+    { paid: '1000.01', unpaid: '-0.01', request: '100.00', ordinary: '0.00', release: '0.00', expected: '0.00' }
+  ])('reapplies the full holdback at paid $paid with requested release $request', ({ paid, unpaid, request, ordinary, release, expected }) => {
+    const result = calculateAutomatedPaymentAmount({
+      ...baseInput, totalClaimsToLastClaimMonth: '1000.00', totalPaymentsToDate: paid,
+      agreementTotal: '1000.00', commitmentRemaining: '1000.00',
+      availableForDisbursementBeforeHoldback: unpaid,
+      releaseHoldback: true, holdbackReleaseAmount: request
+    }, hostHoldbackSettings)
+    expect(result.holdbackAmount).toBe('100.00')
+    expect(result.availableBeforeHoldback).toBe(ordinary)
+    expect(result.holdbackReleaseAmount).toBe(release)
+    expect(result.ceilingAmount).toBe(expected)
+  })
+
+  it('clips the reserve to unpaid cents while keeping full calculated holdback in whole dollars', () => {
+    const result = calculateAutomatedPaymentAmount({
+      ...baseInput, totalClaimsToLastClaimMonth: '1000.00', totalPaymentsToDate: '950.01',
+      agreementTotal: '1000.00', availableForDisbursementBeforeHoldback: '49.99',
+      releaseHoldback: true, holdbackReleaseAmount: '100.00'
+    }, hostHoldbackSettings)
+    expect(result.holdbackAmount).toBe('100.00')
+    expect(result.availableBeforeHoldback).toBe('0.00')
+    expect(result.holdbackReleaseAmount).toBe('49.99')
+    expect(result.ceilingAmount).toBe('49.99')
   })
 
   it('adds cents exactly without binary floating-point drift', () => {

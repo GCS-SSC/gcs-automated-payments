@@ -29,6 +29,7 @@ export default defineGcsExtensionRouteHandler(async context => {
     db as Parameters<typeof calculateAutomatedPaymentFromDb>[0],
     {
       agreementId,
+      currency: body.egcs_fc_currency,
       commitmentType: body.egcs_fc_commitmenttype,
       fiscalYearId: body.egcs_fc_fiscalyear,
       paymentType: body.egcs_fc_paymenttype,

@@ -22,7 +22,8 @@ const messages: Record<string, string> = {
 }
 
 const mountCalculator = (
-  model: Record<string, unknown>
+  model: Record<string, unknown>,
+  onResult?: (result: unknown) => void
 ) => mount(AutomatedPaymentAmountCalculator, {
   props: {
     extensionKey: 'gcs-automated-payments',
@@ -31,7 +32,8 @@ const mountCalculator = (
     context: {
       agreementId: 'agreement-51'
     },
-    model
+    model,
+    ...(onResult ? { onResult } : {})
   },
   global: {
     stubs: {
@@ -298,6 +300,110 @@ describe('automated payment amount calculator', () => {
       releaseHoldback: true,
       holdbackReleaseAmount: '4.2x'
     })
+  })
+
+  it('sends the native currency and displays its code without converting cents', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ ceilingAmount: '10.01', suggestedAmount: '10.01', currency: 'USD', details: [] }) }))
+    vi.stubGlobal('fetch', fetchMock)
+    const wrapper = mountCalculator({ commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'usd' })
+    await flushPromises()
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown[])[1] && ((fetchMock.mock.calls[0] as unknown[])[1] as RequestInit).body))
+    expect(body.egcs_fc_currency).toBe('usd')
+    expect(wrapper.text()).toContain('USD $10.01')
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', suggestedAmount: '10.01' })
+  })
+
+  it.each(['success', 'failure'])('ignores a stale CAD %s after the USD response', async outcome => {
+    let resolveCad!: (value: unknown) => void
+    let rejectCad!: (error: Error) => void
+    let resolveUsd!: (value: unknown) => void
+    const cad = new Promise((resolve, reject) => { resolveCad = resolve; rejectCad = reject })
+    const usd = new Promise(resolve => { resolveUsd = resolve })
+    const fetchMock = vi.fn().mockReturnValueOnce(cad).mockReturnValueOnce(usd)
+    vi.stubGlobal('fetch', fetchMock)
+    const model = { commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'cad' }
+    const wrapper = mountCalculator(model)
+    await flushPromises()
+    await wrapper.setProps({ model: { ...model, currency: 'usd' } })
+    await flushPromises()
+    resolveUsd({ ok: true, json: async () => ({ ceilingAmount: '40.00', suggestedAmount: '40.00', currency: 'USD', details: [] }) })
+    await flushPromises()
+    if (outcome === 'success') resolveCad({ ok: true, json: async () => ({ ceilingAmount: '90.00', suggestedAmount: '90.00', currency: 'CAD', details: [] }) })
+    else rejectCad(new Error('stale CAD error'))
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', ceilingAmount: '40.00', suggestedAmount: '40.00', error: null, loading: false })
+    expect(wrapper.text()).not.toContain('stale CAD error')
+  })
+
+  it('clears a calculation when currency is cleared and ignores the in-flight response', async () => {
+    let resolve!: (value: unknown) => void
+    const fetchMock = vi.fn(() => new Promise(done => { resolve = done }))
+    vi.stubGlobal('fetch', fetchMock)
+    const model = { commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'usd' }
+    const wrapper = mountCalculator(model)
+    await flushPromises()
+    await wrapper.setProps({ model: { ...model, currency: '' } })
+    await flushPromises()
+    resolve({ ok: true, json: async () => ({ ceilingAmount: '90.00', suggestedAmount: '90.00', currency: 'USD', details: [] }) })
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ ceilingAmount: undefined, suggestedAmount: undefined, loading: false, error: null })
+  })
+
+  it('rejects a current server result belonging to another currency', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ceilingAmount: '90.00', suggestedAmount: '90.00', currency: 'CAD', details: [] }) })))
+    const wrapper = mountCalculator({ commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'usd' })
+    await flushPromises()
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', ceilingAmount: undefined, suggestedAmount: undefined,
+      error: 'The calculation currency must match the payment currency. Recalculate before saving.' })
+  })
+
+  it('keeps the latest currency loading when an older request completes first', async () => {
+    let resolveCad!: (value: unknown) => void
+    let resolveUsd!: (value: unknown) => void
+    vi.stubGlobal('fetch', vi.fn().mockReturnValueOnce(new Promise(resolve => { resolveCad = resolve }))
+      .mockReturnValueOnce(new Promise(resolve => { resolveUsd = resolve })))
+    const model = { commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'cad' }
+    const wrapper = mountCalculator(model)
+    await flushPromises()
+    await wrapper.setProps({ model: { ...model, currency: 'usd' } })
+    await flushPromises()
+    resolveCad({ ok: true, json: async () => ({ ceilingAmount: '90.00', currency: 'CAD', details: [] }) })
+    await flushPromises()
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', loading: true, ceilingAmount: undefined })
+    resolveUsd({ ok: true, json: async () => ({ ceilingAmount: '40.00', suggestedAmount: '40.00', currency: 'USD', details: [] }) })
+    await flushPromises()
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', loading: false, ceilingAmount: '40.00' })
+  })
+
+  it('ignores an older localized error body that finishes parsing after a new calculation', async () => {
+    let resolveError!: (value: unknown) => void
+    const response = new Response('{}', { status: 400 })
+    vi.spyOn(response, 'json').mockReturnValue(new Promise(resolve => { resolveError = resolve }))
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(response).mockResolvedValueOnce({ ok: true,
+      json: async () => ({ ceilingAmount: '40.00', suggestedAmount: '40.00', currency: 'USD', details: [] }) }))
+    const model = { commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'cad' }
+    const wrapper = mountCalculator(model)
+    await flushPromises()
+    await wrapper.setProps({ model: { ...model, currency: 'usd' } })
+    await flushPromises()
+    resolveError({ message: 'Old CAD error' })
+    await flushPromises()
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', ceilingAmount: '40.00', error: null, loading: false })
+  })
+
+  it('does not publish an in-flight calculation after unmount', async () => {
+    let resolve!: (value: unknown) => void
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(done => { resolve = done })))
+    const received: unknown[] = []
+    const wrapper = mountCalculator({ commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'usd' }, result => received.push(result))
+    await flushPromises()
+    const count = received.length
+    wrapper.unmount()
+    resolve({ ok: true, json: async () => ({ ceilingAmount: '90.00', currency: 'USD', details: [] }) })
+    await flushPromises()
+    expect(received).toHaveLength(count)
   })
 })
 

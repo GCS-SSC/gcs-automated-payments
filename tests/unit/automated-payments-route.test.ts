@@ -130,6 +130,7 @@ describe('gcs automated payments calculation route', () => {
     }))).resolves.toBe(result)
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(db, {
       agreementId: 'agreement-1',
+      currency: 'cad',
       commitmentType: validCommitmentTypeId,
       fiscalYearId: validFiscalYearId,
       paymentType: 'advance',
@@ -138,5 +139,24 @@ describe('gcs automated payments calculation route', () => {
       releaseHoldback: true,
       holdbackReleaseAmount: '5.25'
     }, streamConfig, financials)
+  })
+
+  it('passes explicit USD through the public route and retains the calculator currency', async () => {
+    readBodyMock.mockResolvedValueOnce({ ...validBody, egcs_fc_currency: 'usd' })
+    calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({ currency: 'USD', ceilingAmount: '90.00' })
+    const handler = (await import('../../server/api/calculate-payment.post')).default
+    await expect(handler(createRouteEvent({ params: { agreementId: '1' }, $db: {}, gcsExtension: { config: {}, agreementFinancials: financials } })))
+      .resolves.toMatchObject({ currency: 'USD', ceilingAmount: '90.00' })
+    expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ currency: 'usd' }), expect.anything(), financials)
+  })
+
+  it.each(['', 'USD', 'usd,cad', ['usd', 'cad'], 123, null])('rejects invalid currency %j before source access', async currency => {
+    readBodyMock.mockResolvedValueOnce({ ...validBody, egcs_fc_currency: currency })
+    const handler = (await import('../../server/api/calculate-payment.post')).default
+    await expect(handler(createRouteEvent({ params: { agreementId: '1' }, $db: {} }))).rejects.toMatchObject({
+      code: 'GCS_AUTOMATED_PAYMENTS_INVALID_CALCULATION_INPUT',
+      details: expect.arrayContaining([expect.objectContaining({ path: 'egcs_fc_currency', code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_INVALID' })])
+    })
+    expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
   })
 })

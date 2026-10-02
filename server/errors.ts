@@ -17,6 +17,8 @@ type AutomatedPaymentErrorCode =
   | 'GCS_AUTOMATED_PAYMENTS_PERIOD_END_INVALID'
   | 'GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID'
   | 'GCS_AUTOMATED_PAYMENTS_AMOUNT_INVALID'
+  | 'GCS_AUTOMATED_PAYMENTS_CURRENCY_INVALID'
+  | 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH'
   | 'GCS_AUTOMATED_PAYMENTS_OPTIONS_INVALID'
   | 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING'
   | 'GCS_AUTOMATED_PAYMENTS_MISSING_HOLDBACK_BASES'
@@ -63,6 +65,14 @@ const automatedPaymentErrorMessages: Record<AutomatedPaymentErrorCode, GcsExtens
     en: 'Enter a valid payment amount.',
     fr: 'Saisissez un montant de paiement valide.'
   },
+  GCS_AUTOMATED_PAYMENTS_CURRENCY_INVALID: {
+    en: 'Select a valid payment currency.',
+    fr: 'Selectionnez une devise de paiement valide.'
+  },
+  GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH: {
+    en: 'The calculation currency must match the payment currency. Recalculate before saving.',
+    fr: 'La devise du calcul doit correspondre a celle du paiement. Recalculez avant l enregistrement.'
+  },
   GCS_AUTOMATED_PAYMENTS_OPTIONS_INVALID: {
     en: 'Review the automated payment options.',
     fr: 'Verifiez les options du paiement automatise.'
@@ -88,6 +98,7 @@ const validationErrorCodes: Record<string, AutomatedPaymentErrorCode> = {
   egcs_fc_periodstart: 'GCS_AUTOMATED_PAYMENTS_PERIOD_START_INVALID',
   egcs_fc_periodend: 'GCS_AUTOMATED_PAYMENTS_PERIOD_END_INVALID',
   egcs_fc_paymentamount: 'GCS_AUTOMATED_PAYMENTS_AMOUNT_INVALID',
+  egcs_fc_currency: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_INVALID',
   extensions: 'GCS_AUTOMATED_PAYMENTS_OPTIONS_INVALID'
 }
 

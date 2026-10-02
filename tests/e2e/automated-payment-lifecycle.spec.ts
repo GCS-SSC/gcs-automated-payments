@@ -1,8 +1,13 @@
 import { expect, test, type APIResponse, type Page } from '@playwright/test'
 import { addAutomatedPaymentMoney, subtractAutomatedPaymentMoney, parseAutomatedPaymentMoney, type AutomatedPaymentCalculationResult } from '../../shared/automated-payments'
 import { deleteUnsubmittedCommitmentDrafts, postNegativeCorrection } from './correction-fixture'
+import { createPaymentLifecycleAuditRecorder, runPaymentAccuracyJourney, shiftPaymentAuditMoney } from './payment-accuracy-journey'
+import { runPaymentCurrencyJourney } from './payment-currency-journey'
+import { runPaymentEmptyFinalFiscalYearJourney } from './payment-empty-final-fy-journey'
 
 const baseUrl = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000'
+
+test.use({ actionTimeout: 20_000 })
 
 const login = async (page: Page, email: string, password: string): Promise<void> => {
   await page.goto(`${baseUrl}/en/login`)
@@ -218,6 +223,7 @@ const calculateAdvance = async (
     {
       data: {
         egcs_fc_commitmenttype: commitmentType,
+        egcs_fc_currency: 'cad',
         egcs_fc_fiscalyear: fiscalYearId,
         egcs_fc_paymenttype: 'advance',
         egcs_fc_periodstart: 0,
@@ -238,6 +244,7 @@ const calculateAdvance = async (
 
 const openAgreementPaymentsTab = async (page: Page, agreementId: string) => {
   await page.goto(`/en/agreements/${agreementId}`)
+  await page.waitForURL(url => url.searchParams.get('section') === 'general')
   const tab = page.getByRole('tab', { name: 'Payments', exact: true })
   await expect(tab).toBeEnabled()
   await tab.click()
@@ -611,7 +618,9 @@ test.describe.serial('Automated payment lifecycle', () => {
     const existingCommitmentIds = new Set(commitmentsBeforeUiCreate.commitments.map(commitment => String(commitment.id)))
 
     await page.goto(`/en/agreements/${target.agreementId}`)
+    await page.waitForURL(url => url.searchParams.get('section') === 'general')
     await page.getByRole('tab', { name: 'Commitments' }).click()
+    await expect(page.getByRole('tab', { name: 'Commitments', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('button', { name: 'Add commitment', exact: true }).click()
     const commitmentDialog = page.getByRole('dialog', { name: 'Add commitment' })
     await expect(commitmentDialog.getByText('Commitment', { exact: true })).toBeVisible()
@@ -673,6 +682,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     )
     expect(fiscalYearId).not.toBe('')
     expect(budgetLineItemId).not.toBe('')
+    const recordCheckpoint = createPaymentLifecycleAuditRecorder(page, testInfo, target)
     const forecastMonthlyAmount = roundCurrency(targetBudgetYear!.remaining / 3)
     expect(forecastMonthlyAmount).toBeGreaterThan(0)
 
@@ -705,6 +715,8 @@ test.describe.serial('Automated payment lifecycle', () => {
     await approveAllSteps(approvalPage, 'fundingcaseforecast', forecastId)
 
     const initialAdvanceCalculation = await calculateAdvance(page, commitmentType, fiscalYearId, 2)
+    await recordCheckpoint({ scenario: 'lifecycle-01-initial-advance', fiscalYearId, commitmentType, periodEnd: 2,
+      calculation: initialAdvanceCalculation, note: 'Observed seeded baseline; controlled ledgers independently verify the complete payment formula.' })
     if (Number(initialAdvanceCalculation.suggestedAmount) <= 0) {
       throw new Error(`Expected a positive calculated advance: ${JSON.stringify(initialAdvanceCalculation)}`)
     }
@@ -808,8 +820,11 @@ test.describe.serial('Automated payment lifecycle', () => {
     await finalizeSourcePayment(page, approvalPage, advancePaymentId)
 
     // The owning extension consumes the host capacity contract as JVs finalize and reverse.
-    const capacityBefore = (await calculateAdvance(page, commitmentType, fiscalYearId, 2))
-      .details.find(detail => detail.label === 'commitmentRemaining')!.value
+    const beforeJvCalculation = await calculateAdvance(page, commitmentType, fiscalYearId, 2)
+    const capacityBefore = beforeJvCalculation.details.find(detail => detail.label === 'commitmentRemaining')!.value
+    const junePaidBeforeJv = beforeJvCalculation.details.find(detail => detail.label === 'totalPaymentsToDate')!.value
+    await recordCheckpoint({ scenario: 'lifecycle-02-finalized-payment-before-jv', fiscalYearId, commitmentType, periodEnd: 2,
+      calculation: beforeJvCalculation, note: 'Finalized source Payment establishes the accounting baseline before signed recoding.' })
     const usersResponse = await page.request.get('/api/users/lookups?status=active&search=root%40example.com')
     await expectOk(usersResponse, 'Find fixture creator')
     const users = await responseJson<{ items: Array<{ id: string; egcs_cn_email: string }> }>(usersResponse)
@@ -840,6 +855,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     expect(sourceAllocation).toBeTruthy()
     const chartResponse = await page.request.post(`/api/agency/${target.agencyId}/chart-of-accounts`, { data: {
       egcs_ay_fiscalyear: jvDetail.egcs_fc_agencyfiscalyear,
+      egcs_ay_currency: 'cad',
       egcs_ay_accountingdimensions: [{ label_en: 'Account', label_fr: 'Compte', value: `CAP-${jv.id}` }]
     } })
     await expectOk(chartResponse, 'Create an unmatched capacity-fixture coding')
@@ -862,31 +878,41 @@ test.describe.serial('Automated payment lifecycle', () => {
     }
     const editJvResponse = await page.request.patch(`/api/journal-vouchers/${jv.id}`, { data: correctedAllocations })
     await expectOk(editJvResponse, 'Split the capacity-fixture allocation')
-    const readCapacity = async () => (await calculateAdvance(page, commitmentType, fiscalYearId, 2))
-      .details.find(detail => detail.label === 'commitmentRemaining')!.value
-    expect(await readCapacity()).toBe(capacityBefore)
+    const readCapacity = async (scenario?: string, expectedCapacity?: string, expectedPaid?: string) => {
+      const calculation = await calculateAdvance(page, commitmentType, fiscalYearId, 2)
+      if (scenario !== undefined) await recordCheckpoint({ scenario, fiscalYearId, commitmentType, periodEnd: 2, calculation,
+        expectedCommitmentCapacity: expectedCapacity, expectedRecordedPaid: expectedPaid,
+        note: 'Expected capacity is the observed pre-JV baseline plus independently authored signed adjustments; balanced same-year JVs preserve cumulative recorded paid.' })
+      return calculation.details.find(detail => detail.label === 'commitmentRemaining')!.value
+    }
+    expect(await readCapacity('lifecycle-03-draft-jv-has-no-effect', capacityBefore, junePaidBeforeJv)).toBe(capacityBefore)
     await completeEntity(page, 'fundingcasejournalvoucher', String(jv.id), 'Shared capacity service fixture.')
-    expect(await readCapacity()).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
+    expect(await readCapacity('lifecycle-04-successful-jv-frees-ten', shiftPaymentAuditMoney(capacityBefore, '10.00'), junePaidBeforeJv)).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
     const reversalResponse = await page.request.post(`/api/journal-vouchers/${jv.id}/reversal`, { data: {
       egcs_fc_requesteddate: '2026-10-01', egcs_fc_narrative_en: 'Restore the calculator baseline.',
       egcs_fc_narrative_fr: 'Rétablir la base du calculateur.'
     } })
     await expectOk(reversalResponse, 'Prepare the capacity-fixture reversal')
     const reversal = await responseJson<IdRow>(reversalResponse)
-    expect(await readCapacity()).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
+    expect(await readCapacity('lifecycle-05-draft-reversal-retains-jv', shiftPaymentAuditMoney(capacityBefore, '10.00'), junePaidBeforeJv)).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
     await completeEntity(page, 'fundingcasejournalvoucher', String(reversal.id), 'Restore shared capacity baseline.')
-    expect(await readCapacity()).toBe(capacityBefore)
+    expect(await readCapacity('lifecycle-06-successful-reversal-restores-baseline', capacityBefore, junePaidBeforeJv)).toBe(capacityBefore)
 
     // The accounting date is October (fiscal period six); earlier June totals retain their historical cutoff.
     const calculationBeforeCorrection = await calculateAdvance(page, commitmentType, fiscalYearId, 6)
     const paidBeforeCorrection = calculationBeforeCorrection.details.find(detail => detail.label === 'totalPaymentsToDate')!.value
+    await recordCheckpoint({ scenario: 'lifecycle-07-before-october-correction', fiscalYearId, commitmentType, periodEnd: 6,
+      calculation: calculationBeforeCorrection, expectedCommitmentCapacity: capacityBefore, note: 'October cutoff includes the later posted Correction; June cutoff retains its earlier paid totals.' })
     const allocationBeforeCorrection = await responseJson<unknown>(await page.request.get(`/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`))
     const postedCorrection = await postNegativeCorrection(page, approvalPage, target, commitmentId, advancePaymentId)
     const calculationAfterCorrection = await calculateAdvance(page, commitmentType, fiscalYearId, 6)
+    await recordCheckpoint({ scenario: 'lifecycle-08-posted-negative-correction', fiscalYearId, commitmentType, periodEnd: 6,
+      calculation: calculationAfterCorrection, expectedRecordedPaid: shiftPaymentAuditMoney(paidBeforeCorrection, '-1.00'),
+      expectedCommitmentCapacity: shiftPaymentAuditMoney(capacityBefore, '1.00'), note: 'A separate posted -$1 Correction reduces corrected recorded paid and restores $1 capacity; source cash is immutable.' })
     expect(calculationAfterCorrection.details.find(detail => detail.label === 'totalPaymentsToDate')!.value)
       .toBe(subtractAutomatedPaymentMoney(parseAutomatedPaymentMoney(paidBeforeCorrection), parseAutomatedPaymentMoney('1.00')))
     const capacityAfterCorrection = addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('1.00'))
-    expect(await readCapacity()).toBe(capacityAfterCorrection)
+    expect(await readCapacity('lifecycle-09-june-cutoff-after-correction', shiftPaymentAuditMoney(capacityBefore, '1.00'), junePaidBeforeJv)).toBe(capacityAfterCorrection)
     expect(await responseJson(await page.request.get(`/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`))).toEqual(allocationBeforeCorrection)
     await page.goto(`/en/agreements/${target.agreementId}/corrections/${postedCorrection.id}`)
     await expect(page.getByRole('tab', { name: 'Correction Completion', exact: true })).toBeVisible()
@@ -902,7 +928,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await expectOk(await page.request.patch(`/api/journal-vouchers/${replacement.id}`, { data: correctedAllocations }), 'Save replacement splits')
     await completeEntity(page, 'fundingcasejournalvoucher', String(replacement.id), 'Replacement capacity fixture.')
     const payableCapacity = addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityAfterCorrection), parseAutomatedPaymentMoney('10.00'))
-    expect(await readCapacity()).toBe(payableCapacity)
+    expect(await readCapacity('lifecycle-10-successful-replacement', shiftPaymentAuditMoney(capacityBefore, '11.00'), junePaidBeforeJv)).toBe(payableCapacity)
     await expectOk(await page.request.patch(`/api/extensions/streams/${target.streamId}`, { data: {
       extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: true, config: { enabledPaymentTypes: ['advance'] }
     } }), 'Select manual reimbursement with generated allocation lines')
@@ -919,7 +945,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     const generatedPayment = await responseJson<IdRow>(generatedResponse)
     const generatedDetail = await responseJson<PaymentCoverageDetail>(await page.request.get(`/api/agreements/${target.agreementId}/payments/${generatedPayment.id}`))
     expect(generatedDetail.lines.reduce((total, line) => addAutomatedPaymentMoney(total, parseAutomatedPaymentMoney(line.egcs_fc_amount)), parseAutomatedPaymentMoney('0.00'))).toBe(payableCapacity)
-    expect(await readCapacity()).toBe('0.00')
+    expect(await readCapacity('lifecycle-11-generated-payment-exhausts-capacity', '0.00')).toBe('0.00')
     await page.goto(`/en/agreements/${target.agreementId}/payments/${generatedPayment.id}`)
     await expect(page.getByRole('tab', { name: 'Payment completion', exact: true })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('post-jv-generated-payment.png'), fullPage: true })
@@ -1051,4 +1077,26 @@ test.describe.serial('Automated payment lifecycle', () => {
     })
     await expectOk(activateWithCustomCodeResponse, 'Activate automated payments with a custom finalfiscal code')
   })
+
+  test('verifies fixed advances, reconciled claims, repeated whole-dollar holdback and final releases', async ({ page, browser }, testInfo) => {
+    test.setTimeout(300_000)
+    await login(page, 'root@example.com', 'password123')
+    await runPaymentAccuracyJourney(page, browser, testInfo, target, {
+      login,
+      approveAll: approveAllSteps,
+      complete: completeEntity
+    })
+  })
+
+  test('separates CAD and USD Agreements and rejects mixed financial currencies', async ({ page, browser }, testInfo) => {
+    test.setTimeout(360_000)
+    await login(page, 'root@example.com', 'password123')
+    await runPaymentCurrencyJourney(page, browser, testInfo, target, { login, approveAll: approveAllSteps, complete: completeEntity })
+  })
+  test('uses an explicit empty final Agreement fiscal year for zero holdback and full native advance', async ({ page, browser }, testInfo) => {
+    test.setTimeout(180_000)
+    await login(page, 'root@example.com', 'password123')
+    await runPaymentEmptyFinalFiscalYearJourney(page, browser, testInfo, target, { login, approveAll: approveAllSteps, complete: completeEntity })
+  })
+
 })

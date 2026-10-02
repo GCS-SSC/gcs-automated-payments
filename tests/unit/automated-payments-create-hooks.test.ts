@@ -362,4 +362,36 @@ describe('gcs automated payments create hooks', () => {
       paymentId: 'payment-1'
     })).resolves.toBeUndefined()
   })
+
+  it('calculates USD creation and saves existing release metadata without replacing the native currency', async () => {
+    const handler = await loadHandler()
+    const body = { ...validBody, egcs_fc_currency: 'usd' }
+    await handler({ phase: 'before-create', validatedBody: body, trx: {}, agreementId: '1', config: {} })
+    await handler({ phase: 'after-create', validatedBody: body, createdRecord: { id: '1', egcs_fc_currency: 'usd' }, trx: {}, agreementId: '1', config: {} })
+    expect(calculateAutomatedPaymentFromDbMock).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({ currency: 'usd' }), {}, financials)
+    expect(calculateAutomatedPaymentFromDbMock).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({ currency: 'usd', excludePaymentId: '1' }), {}, financials)
+    expect(body.egcs_fc_currency).toBe('usd')
+    expect(savePaymentMetadataMock).toHaveBeenCalledWith(expect.anything(), '1', { releaseHoldback: true, holdbackReleaseAmount: '8.00' })
+  })
+
+  it('rejects a created payment currency different from its validated request before saving metadata', async () => {
+    const handler = await loadHandler()
+    await expect(handler({ phase: 'after-create', validatedBody: { ...validBody, egcs_fc_currency: 'usd' },
+      createdRecord: { id: '1', egcs_fc_currency: 'cad' }, trx: {}, agreementId: '1', config: {} }))
+      .rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', details: [expect.objectContaining({ path: 'egcs_fc_currency' })] })
+    expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
+    expect(savePaymentMetadataMock).not.toHaveBeenCalled()
+  })
+
+  it.each([undefined, 'eur'])('recalculates updates in their saved or changed currency %j', async nextCurrency => {
+    await loadHandler()
+    const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as (context: Record<string, unknown>) => Promise<void>
+    const responses = [{ egcs_fc_fiscalyear: '1', egcs_fc_paymenttype: 'advance', egcs_fc_periodend: 0,
+      egcs_fc_paymentamount: '50.00', egcs_fc_currency: 'usd', egcs_fc_fundingagreementcommitment: '1' },
+      { commitment_type: '2', stream_id: '1' }, { config: {} }]
+    const query = new Proxy({}, { get: (_target, property) => property === 'executeTakeFirst' ? async () => responses.shift() : () => query })
+    await guard({ operation: 'payment.update', db: { selectFrom: () => query }, agreementId: '1', paymentId: '1',
+      changes: nextCurrency ? { egcs_fc_currency: nextCurrency } : {} })
+    expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ currency: nextCurrency ?? 'usd', excludePaymentId: '1' }), {}, financials)
+  })
 })

@@ -40,6 +40,10 @@ const createCalculationDb = (rows: Record<string, unknown>) => {
     const value = rows[table]
     const query = createQuery(Array.isArray(value) ? value[0] as Record<string, unknown> | undefined : value as Record<string, unknown> | undefined)
     query.execute = vi.fn(async () => Array.isArray(value) ? value : value === undefined ? [] : [value])
+    if (table === 'Funding_Case_Agreement_Budget_Fiscal_Year' && !Array.isArray(value)) {
+      const budgets = rows.Funding_Case_Agreement_Budget_Line_Item as Array<{ fiscal_year_order: number }> | undefined
+      query.execute = vi.fn(async () => [value, ...(budgets ?? [])].filter(Boolean))
+    }
     queries.set(table, query)
     return query
   })
@@ -61,8 +65,7 @@ describe('automated payment calculation data', () => {
     const queries = [
       getQuerySource(source, 'getSelectedPaymentPeriod', 'getClaimRows'),
       getQuerySource(source, 'getClaimRows', 'getLastClaimPosition'),
-      getQuerySource(source, 'getForecastRows', 'getPaymentRows'),
-      getQuerySource(source, 'getPaymentRows', 'getHoldbackReleasedToDate')
+      getQuerySource(source, 'getForecastRows', 'getBudgetTotals')
     ]
 
     for (const query of queries) {
@@ -75,7 +78,7 @@ describe('automated payment calculation data', () => {
   it('derives finalfiscal from the Agency enum independently of the custom basis code', async () => {
     const db = createQuery({
       egcs_fc_holdback: 12.5,
-      holdback_basis_type: 'finalfiscal'
+      egcs_fc_currency: 'cad', holdback_basis_type: 'finalfiscal'
     })
 
     await expect(getAgreementHoldbackSettings(db as never, 'agreement-1')).resolves.toEqual({
@@ -97,7 +100,7 @@ describe('automated payment calculation data', () => {
   it('uses fullagreement for that semantic type without comparing the foreign-key id', async () => {
     const db = createQuery({
       egcs_fc_holdback: '10',
-      holdback_basis_type: 'fullagreement'
+      egcs_fc_currency: 'cad', holdback_basis_type: 'fullagreement'
     })
 
     await expect(getAgreementHoldbackSettings(db as never, 'agreement-1')).resolves.toEqual({
@@ -109,7 +112,7 @@ describe('automated payment calculation data', () => {
   it('fails closed when the agreement basis does not resolve to a supported semantic type', async () => {
     const db = createQuery({
       egcs_fc_holdback: 10,
-      holdback_basis_type: 'custom-basis'
+      egcs_fc_currency: 'cad', holdback_basis_type: 'custom-basis'
     })
 
     await expect(getAgreementHoldbackSettings(db as never, 'agreement-1')).rejects.toMatchObject({
@@ -117,8 +120,8 @@ describe('automated payment calculation data', () => {
     })
   })
 
-  it('collects every persisted financial source and calculates an enabled advance ceiling', async () => {
-    const { db, queries } = createCalculationDb({
+  it('collects claims and forecasts with host-provided paid and capacity for an enabled advance', async () => {
+    const { db } = createCalculationDb({
       Funding_Case_Agreement_Budget_Fiscal_Year: { fiscal_year_order: 2026 },
       Funding_Case_Agreement_Claim_Reconcile_Line_Item: [
         { amount: '10.00', month: 2, fiscal_year_order: 2026 },
@@ -143,7 +146,7 @@ describe('automated payment calculation data', () => {
         { amount: '50.00', fiscal_year_order: 2027 }
       ],
       Funding_Case_Agreement_Profile: {
-        egcs_fc_holdback: '10', holdback_basis_type: 'finalfiscal'
+        egcs_fc_holdback: '10', egcs_fc_currency: 'cad', holdback_basis_type: 'finalfiscal'
       },
       'extensions.kv_entry': [
         { value: { releaseHoldback: true, holdbackReleaseAmount: '2.00' } }
@@ -161,10 +164,9 @@ describe('automated payment calculation data', () => {
     expect(result.details.map(detail => detail.label)).toEqual(expect.arrayContaining([
       'baseAmount', 'commitmentRemaining', 'availableBeforeHoldback'
     ]))
-    expect(queries.get('Funding_Case_Agreement_Payment')?.where)
-      .toHaveBeenCalledWith('Funding_Case_Agreement_Payment.id', '!=', '21')
+    expect(db.selectFrom).not.toHaveBeenCalledWith('Funding_Case_Agreement_Payment')
     expect(financials.getCommitmentPaymentCapacity).toHaveBeenCalledWith({
-      fiscalYearId: '3', commitmentTypeId: '2', excludePaymentId: '21'
+      fiscalYearId: '3', commitmentTypeId: '2', currency: 'cad', excludePaymentId: '21'
     })
     expect(result.details.find(detail => detail.label === 'commitmentRemaining')?.value).toBe('60.00')
     expect(db.selectFrom).not.toHaveBeenCalledWith('Funding_Case_Agreement_Commitment_Line')
@@ -174,7 +176,7 @@ describe('automated payment calculation data', () => {
   it('preserves an aggregate capacity beyond the persisted row range without duplicating host math', async () => {
     const { db } = createCalculationDb({
       Funding_Case_Agreement_Budget_Fiscal_Year: { fiscal_year_order: 2026 },
-      Funding_Case_Agreement_Profile: { egcs_fc_holdback: 0, holdback_basis_type: 'fullagreement' }
+      Funding_Case_Agreement_Profile: { egcs_fc_holdback: 0, egcs_fc_currency: 'cad', holdback_basis_type: 'fullagreement' }
     })
     const financials = { getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '199999999999999999.98' })),
       getRecordedPaidToDate: vi.fn(async () => recordedPaid()) }
@@ -197,7 +199,7 @@ describe('automated payment calculation data', () => {
       Funding_Case_Agreement_Commitment_Line: [],
       Funding_Case_Agreement_Budget_Line_Item: [],
       Funding_Case_Agreement_Profile: {
-        egcs_fc_holdback: 0, holdback_basis_type: 'fullagreement'
+        egcs_fc_holdback: 0, egcs_fc_currency: 'cad', holdback_basis_type: 'fullagreement'
       }
     })
 
@@ -227,7 +229,7 @@ describe('automated payment calculation data', () => {
       Funding_Case_Agreement_Commitment_Line: [{ id: undefined, amount: 5 }],
       Funding_Case_Agreement_Budget_Line_Item: [{ amount: undefined, fiscal_year_order: undefined }],
       Funding_Case_Agreement_Profile: {
-        egcs_fc_holdback: undefined, holdback_basis_type: 'fullagreement'
+        egcs_fc_holdback: undefined, egcs_fc_currency: 'cad', holdback_basis_type: 'fullagreement'
       }
     })
 
@@ -245,7 +247,7 @@ describe('automated payment calculation data', () => {
       Funding_Case_Agreement_Claim_Reconcile_Line_Item: [{ amount: '50.00', month: 4, fiscal_year_order: 2026 }],
       Funding_Case_Agreement_Payment: [{ id: '20', amount: '20.00', month: 1, fiscal_year_order: 2026 }],
       Funding_Case_Agreement_Budget_Line_Item: [{ amount: '200.00', fiscal_year_order: 2026 }],
-      Funding_Case_Agreement_Profile: { egcs_fc_holdback: 0, holdback_basis_type: 'fullagreement' }
+      Funding_Case_Agreement_Profile: { egcs_fc_holdback: 0, egcs_fc_currency: 'cad', holdback_basis_type: 'fullagreement' }
     })
     const totals = vi.fn(async () => ({ ...recordedPaid('20.00'), correctionAmount: '10.00', recordedPaidAmount: '30.00' }))
     const service = { ...financials, getRecordedPaidToDate: totals }
@@ -253,7 +255,7 @@ describe('automated payment calculation data', () => {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3', paymentType: 'reimbursement', periodEnd: 4, excludePaymentId: '99'
     }, { enabledPaymentTypes: ['reimbursement'] }, service)
     expect(result.baseAmount).toBe('20.00')
-    expect(totals).toHaveBeenCalledWith({ fiscalYearId: '3', periodEnd: 4, excludePaymentId: '99' })
+    expect(totals).toHaveBeenCalledWith({ fiscalYearId: '3', periodEnd: 4, currency: 'cad', excludePaymentId: '99' })
     totals.mockRejectedValueOnce(new Error('corrected accounting unavailable'))
     await expect(calculateAutomatedPaymentFromDb(db as never, {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3', paymentType: 'reimbursement', periodEnd: 4
@@ -302,5 +304,78 @@ describe('automated payment calculation data', () => {
   it('returns the selected period when the stable fiscal year is available', async () => {
     await expect(getSelectedPaymentPeriod(createQuery({ fiscal_year_order: '2027' }) as never, '1', '2', 6))
       .resolves.toEqual({ fiscalYearOrder: 2027, month: 6 })
+  })
+
+  it.each([undefined, '', 'USD'])('rejects an Agreement with missing or invalid native currency %s', async currency => {
+    const { db } = createCalculationDb({ Funding_Case_Agreement_Profile: {
+      egcs_fc_holdback: 10, holdback_basis_type: 'fullagreement', egcs_fc_currency: currency
+    } })
+    const services = { getCommitmentPaymentCapacity: vi.fn(), getRecordedPaidToDate: vi.fn() }
+    await expect(calculateAutomatedPaymentFromDb(db as never, {
+      agreementId: '1', commitmentType: '2', fiscalYearId: '3', currency: 'cad', paymentType: 'advance', periodEnd: 0
+    }, {}, services)).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_INVALID' })
+    expect(services.getRecordedPaidToDate).not.toHaveBeenCalled()
+    expect(services.getCommitmentPaymentCapacity).not.toHaveBeenCalled()
+  })
+
+  it('rejects a requested currency different from the immutable Agreement before reading amounts', async () => {
+    const { db, queries } = createCalculationDb({ Funding_Case_Agreement_Profile: {
+      egcs_fc_holdback: 10, holdback_basis_type: 'fullagreement', egcs_fc_currency: 'cad'
+    } })
+    const services = { getCommitmentPaymentCapacity: vi.fn(), getRecordedPaidToDate: vi.fn() }
+    await expect(calculateAutomatedPaymentFromDb(db as never, {
+      agreementId: '1', commitmentType: '2', fiscalYearId: '3', currency: 'usd', paymentType: 'advance', periodEnd: 0
+    }, {}, services)).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH' })
+    expect(services.getRecordedPaidToDate).not.toHaveBeenCalled()
+    expect(services.getCommitmentPaymentCapacity).not.toHaveBeenCalled()
+    expect([...queries.keys()]).toEqual(['Funding_Case_Agreement_Profile'])
+  })
+
+  it('passes the selected native currency to source filters and both SDK financial services', async () => {
+    const { db, queries } = createCalculationDb({
+      Funding_Case_Agreement_Budget_Fiscal_Year: { fiscal_year_order: 2026 },
+      Funding_Case_Agreement_Claim_Reconcile_Line_Item: [{ amount: '100.01', month: 1, fiscal_year_order: 2026 }],
+      Funding_Case_Agreement_Forecast_Line_Item: [{ amount: '170.04', month: 1, fiscal_year_order: 2026 },
+        { amount: '90.03', month: 3, fiscal_year_order: 2026 }, { amount: '70.02', month: 8, fiscal_year_order: 2026 }],
+      Funding_Case_Agreement_Budget_Line_Item: [{ amount: '125.55', fiscal_year_order: 2026 }, { amount: '84.46', fiscal_year_order: 2027 }],
+      Funding_Case_Agreement_Profile: { egcs_fc_holdback: 10, egcs_fc_currency: 'usd', holdback_basis_type: 'fullagreement' }
+    })
+    const service = { getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '75.01' })),
+      getRecordedPaidToDate: vi.fn(async () => ({ ...recordedPaid('20.02'), currency: 'usd' })) }
+    const result = await calculateAutomatedPaymentFromDb(db as never, {
+      agreementId: '1', commitmentType: '2', fiscalYearId: '3', currency: 'usd', paymentType: 'advance', periodEnd: 3
+    }, { enabledPaymentTypes: ['advance'] }, service)
+    expect(result).toMatchObject({ currency: 'USD', baseAmount: '170.02', ceilingAmount: '75.01', holdbackAmount: '21.00', availableBeforeHoldback: '303.50' })
+    expect(service.getRecordedPaidToDate).toHaveBeenCalledExactlyOnceWith({ fiscalYearId: '3', periodEnd: 3, currency: 'usd' })
+    expect(service.getCommitmentPaymentCapacity).toHaveBeenCalledExactlyOnceWith({ fiscalYearId: '3', commitmentTypeId: '2', currency: 'usd' })
+    expect(queries.get('Funding_Case_Agreement_Claim_Reconcile_Line_Item')?.where).toHaveBeenCalledWith('Funding_Case_Agreement_Claim_Line_Item.egcs_fc_currency', '=', 'usd')
+    expect(queries.get('Funding_Case_Agreement_Claim_Reconcile_Line_Item')?.where).toHaveBeenCalledWith('Funding_Case_Agreement_Claim_Line_Item._deleted', '=', false)
+    expect(queries.get('Funding_Case_Agreement_Forecast_Line_Item')?.where).toHaveBeenCalledWith('Funding_Case_Agreement_Forecast_Line_Item.egcs_fc_currency', '=', 'usd')
+    expect(queries.get('Funding_Case_Agreement_Budget_Line_Item')?.where).toHaveBeenCalledWith('Funding_Case_Agreement_Budget_Line_Item.egcs_fc_currency', '=', 'usd')
+  })
+
+  it('retains USD for empty selected-currency paid rows and rejects a mismatched SDK paid currency', async () => {
+    const { db } = createCalculationDb({
+      Funding_Case_Agreement_Budget_Fiscal_Year: { fiscal_year_order: 2026 },
+      Funding_Case_Agreement_Forecast_Line_Item: [{ amount: '100.00', month: 0, fiscal_year_order: 2026 }],
+      Funding_Case_Agreement_Budget_Line_Item: [{ amount: '100.00', fiscal_year_order: 2026 }],
+      Funding_Case_Agreement_Profile: { egcs_fc_holdback: 10, egcs_fc_currency: 'usd', holdback_basis_type: 'fullagreement' }
+    })
+    const service = { getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '100.00' })),
+      getRecordedPaidToDate: vi.fn(async () => ({ ...recordedPaid(), currency: null as string | null })) }
+    const input = { agreementId: '1', commitmentType: '2', fiscalYearId: '3', currency: 'usd', paymentType: 'advance' as const, periodEnd: 0 }
+    await expect(calculateAutomatedPaymentFromDb(db as never, input, {}, service)).resolves.toMatchObject({ currency: 'USD', ceilingAmount: '90.00' })
+    service.getRecordedPaidToDate.mockResolvedValueOnce({ ...recordedPaid('20.00'), currency: 'cad' })
+    await expect(calculateAutomatedPaymentFromDb(db as never, input, {}, service)).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH' })
+    service.getRecordedPaidToDate.mockResolvedValueOnce({ ...recordedPaid('20.00'), currency: null })
+    await expect(calculateAutomatedPaymentFromDb(db as never, input, {}, service)).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH' })
+  })
+
+  it('returns a disabled selected-currency result without a paid fallback or source query', async () => {
+    const db = { selectFrom: vi.fn() }
+    await expect(calculateAutomatedPaymentFromDb(db as never, {
+      agreementId: '1', commitmentType: '2', fiscalYearId: '3', currency: 'usd', paymentType: 'advance', periodEnd: 0
+    }, { enabledPaymentTypes: [] }, financials)).resolves.toMatchObject({ enabled: false, currency: 'USD', ceilingAmount: '0.00' })
+    expect(db.selectFrom).not.toHaveBeenCalled()
   })
 })

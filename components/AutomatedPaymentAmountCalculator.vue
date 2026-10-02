@@ -1,7 +1,7 @@
 <script setup lang="ts">
 
 import { messages } from '../i18n/messages'
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { Ref } from 'vue'
 import { type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
 import type { GcsPaymentAmountCalculatorResult } from '@gcs-ssc/extensions/ui'
@@ -17,6 +17,7 @@ import {
 } from '@gcs-ssc/extensions/ui'
 import {
   EXTENSION_KEY,
+  AutomatedPaymentCurrencySchema,
   ZERO_AUTOMATED_PAYMENT_MONEY,
   type AutomatedPaymentCalculationResult,
   type AutomatedPaymentMoney,
@@ -51,6 +52,12 @@ const holdbackReleaseAmount: Ref<string> = ref('')
 
 const api = useExtensionApi(extensionKey)
 const endpoint = computed(() => `/agreements/${context.agreementId}/calculate-payment`)
+const selectedCurrency = computed(() => {
+  const parsed = AutomatedPaymentCurrencySchema.safeParse(model.currency)
+  return parsed.success ? parsed.data : null
+})
+let calculationSequence = 0
+onBeforeUnmount(() => { calculationSequence += 1 })
 
 const calculationDetailLabelKeys: Record<string, keyof typeof messages.en> = {
   baseAmount: 'details.base_amount',
@@ -122,7 +129,8 @@ const formatMoney = (value: AutomatedPaymentMoney) => {
   const isFrench = locale.value === 'fr'
   const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, isFrench ? '\u00a0' : ',')
   const amount = `${grouped}${isFrench ? ',' : '.'}${fraction}`
-  return isFrench ? `${negative ? '-' : ''}${amount}\u00a0$` : `${negative ? '-' : ''}$${amount}`
+  const currency = calculation.value?.currency ?? selectedCurrency.value?.toUpperCase() ?? ''
+  return isFrench ? `${negative ? '-' : ''}${amount}\u00a0$ ${currency}` : `${currency} ${negative ? '-' : ''}$${amount}`
 }
 
 const calculationDetails = computed(() =>
@@ -143,6 +151,7 @@ const requestBody = computed(() => ({
   egcs_fc_commitmenttype: model.commitmentType,
   egcs_fc_fiscalyear: model.fiscalYear,
   egcs_fc_paymenttype: model.paymentType,
+  egcs_fc_currency: selectedCurrency.value,
   egcs_fc_periodstart: model.periodStart,
   egcs_fc_periodend: model.periodEnd,
   egcs_fc_paymentamount: model.amount,
@@ -160,6 +169,7 @@ const hasRequiredInputs = computed(() =>
   && typeof requestBody.value.egcs_fc_fiscalyear === 'string'
   && requestBody.value.egcs_fc_fiscalyear.length > 0
   && (requestBody.value.egcs_fc_paymenttype === 'reimbursement' || requestBody.value.egcs_fc_paymenttype === 'advance')
+  && requestBody.value.egcs_fc_currency !== null
   && typeof requestBody.value.egcs_fc_periodstart === 'number'
   && typeof requestBody.value.egcs_fc_periodend === 'number'
 )
@@ -168,7 +178,7 @@ const publishResult = () => {
   const result: GcsPaymentAmountCalculatorResult = {
     ceilingAmount: calculation.value?.ceilingAmount,
     suggestedAmount: calculation.value?.suggestedAmount,
-    currency: calculation.value?.currency ?? 'CAD',
+    currency: calculation.value?.currency ?? selectedCurrency.value?.toUpperCase(),
     details: calculation.value?.details ?? [],
     loading: isLoading.value,
     error: errorMessage.value
@@ -178,6 +188,10 @@ const publishResult = () => {
 
 /** Recalculates the payment ceiling from the current form values and publishes the result. */
 const calculate = async () => {
+  const sequence = ++calculationSequence
+  const body = requestBody.value
+  calculation.value = null
+  errorMessage.value = null
   emit('extensionPayload', {
     releaseHoldback: releaseHoldback.value,
     holdbackReleaseAmount: serializedHoldbackReleaseAmount.value
@@ -186,6 +200,7 @@ const calculate = async () => {
   if (!hasRequiredInputs.value) {
     calculation.value = null
     errorMessage.value = null
+    isLoading.value = false
     publishResult()
     return
   }
@@ -193,22 +208,30 @@ const calculate = async () => {
   isLoading.value = true
   publishResult()
   try {
-    calculation.value = await api.post<AutomatedPaymentCalculationResult>(endpoint.value, requestBody.value)
+    const result = await api.post<AutomatedPaymentCalculationResult>(endpoint.value, body)
+    if (sequence !== calculationSequence) return
+    if (result.currency.toLowerCase() !== body.egcs_fc_currency) throw new Error(t('currency_mismatch'))
+    calculation.value = result
     errorMessage.value = null
   } catch (error: unknown) {
+    if (sequence !== calculationSequence) return
     calculation.value = null
     if (error instanceof Response) {
-      errorMessage.value = await readErrorMessage(error)
+      const message = await readErrorMessage(error)
+      if (sequence !== calculationSequence) return
+      errorMessage.value = message
     } else {
       errorMessage.value = error instanceof Error ? error.message : t('calculation_error')
     }
   } finally {
-    isLoading.value = false
-    publishResult()
+    if (sequence === calculationSequence) {
+      isLoading.value = false
+      publishResult()
+    }
   }
 }
 
-watch(requestBody, calculate, { deep: true, immediate: true })
+watch([requestBody, endpoint], calculate, { deep: true, immediate: true })
 </script>
 
 <template>

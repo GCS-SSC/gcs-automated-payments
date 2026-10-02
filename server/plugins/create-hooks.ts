@@ -7,6 +7,7 @@ import {
 import { sql, type Transaction } from 'kysely'
 import {
   AutomatedPaymentCalculateSchema,
+  AutomatedPaymentCurrencySchema,
   EXTENSION_KEY,
   ZERO_AUTOMATED_PAYMENT_MONEY,
   compareAutomatedPaymentMoney,
@@ -72,10 +73,14 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
     )
 
     if (context.createdRecord) {
+      if (AutomatedPaymentCurrencySchema.parse(context.createdRecord.egcs_fc_currency) !== parsed.data.egcs_fc_currency) {
+        throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', 'egcs_fc_currency')
+      }
       const calculation = await calculateAutomatedPaymentFromDb(
         context.trx as Parameters<typeof calculateAutomatedPaymentFromDb>[0],
         {
           agreementId: context.agreementId,
+          currency: parsed.data.egcs_fc_currency,
           commitmentType: parsed.data.egcs_fc_commitmenttype,
           fiscalYearId: parsed.data.egcs_fc_fiscalyear,
           paymentType: parsed.data.egcs_fc_paymenttype,
@@ -107,6 +112,7 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
       context.trx as Parameters<typeof calculateAutomatedPaymentFromDb>[0],
       {
         agreementId: context.agreementId,
+        currency: parsed.data.egcs_fc_currency,
         commitmentType: parsed.data.egcs_fc_commitmenttype,
         fiscalYearId: parsed.data.egcs_fc_fiscalyear,
         paymentType: parsed.data.egcs_fc_paymenttype,
@@ -145,6 +151,7 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
       .select([
         'Funding_Case_Agreement_Payment.egcs_fc_fiscalyear',
         'Funding_Case_Agreement_Payment.egcs_fc_paymenttype',
+        'Funding_Case_Agreement_Payment.egcs_fc_currency',
         'Funding_Case_Agreement_Payment.egcs_fc_periodend',
         databaseNumericText(sql.ref('Funding_Case_Agreement_Payment.egcs_fc_paymentamount')).as('egcs_fc_paymentamount'),
         'Funding_Case_Agreement_Payment.egcs_fc_fundingagreementcommitment'
@@ -186,6 +193,7 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
     const metadata = await getPaymentMetadata(db, context.paymentId)
     const calculation = await calculateAutomatedPaymentFromDb(db, {
       agreementId: context.agreementId,
+      currency: AutomatedPaymentCurrencySchema.parse(changes.egcs_fc_currency ?? payment.egcs_fc_currency),
       commitmentType: String(nextCommitment.commitment_type),
       fiscalYearId: String(changes.egcs_fc_fiscalyear ?? payment.egcs_fc_fiscalyear),
       paymentType: String(changes.egcs_fc_paymenttype ?? payment.egcs_fc_paymenttype) as 'reimbursement' | 'advance',

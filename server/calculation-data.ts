@@ -2,11 +2,10 @@ import { sql } from 'kysely'
 import type { Kysely } from 'kysely'
 import {
   EXTENSION_KEY,
+  AutomatedPaymentCurrencySchema,
   ZERO_AUTOMATED_PAYMENT_MONEY,
   addAutomatedPaymentMoney,
   calculateAutomatedPaymentAmount,
-  calculateLegacyDec041HoldbackAmount,
-  compareAutomatedPaymentMoney,
   parseAutomatedPaymentExtensionPayload,
   parseAutomatedPaymentsStreamConfig,
   subtractAutomatedPaymentMoney,
@@ -28,6 +27,7 @@ const stableBudgetFiscalYearId = sql<string>`COALESCE(
 )`
 
 export interface AutomatedPaymentServerInput {
+  currency?: string
   agreementId: string
   commitmentType: string
   fiscalYearId: string
@@ -50,11 +50,9 @@ type PeriodPosition = {
 
 type AmountPeriodRow = PeriodPosition & {
   amount: AutomatedPaymentMoney
-  id?: string
 }
 
 const PAYMENT_METADATA_KEY = 'payment-metadata'
-const NEGATIVE_WORKFLOW_STATES = ['unsuccessful', 'denied', 'failed', 'cancelled'] as const
 
 /** Serializes ceiling-affecting payment mutations for one Agreement. */
 export const lockAutomatedPaymentAgreement = async (db: Db, agreementId: string): Promise<void> => {
@@ -69,16 +67,14 @@ const isOnOrBefore = (row: PeriodPosition, position: PeriodPosition): boolean =>
   row.fiscalYearOrder < position.fiscalYearOrder
   || (row.fiscalYearOrder === position.fiscalYearOrder && row.month <= position.month)
 
-const sumRows = (rows: Array<{ amount?: unknown }>): AutomatedPaymentMoney =>
-  sumAutomatedPaymentMoney(rows.map(row => parseDatabaseMoney(row.amount)))
-
 const sumPeriodRows = (rows: AmountPeriodRow[], position: PeriodPosition): AutomatedPaymentMoney =>
   sumAutomatedPaymentMoney(rows.filter(row => isOnOrBefore(row, position)).map(row => row.amount))
 
 /** Loads the agreement's holdback percentage and agency holdback-basis type. */
 export const getAgreementHoldbackSettings = async (
   db: Db,
-  agreementId: string
+  agreementId: string,
+  currency?: string
 ): Promise<AutomatedPaymentsHoldbackSettings> => {
   const row = await db
     .selectFrom('Funding_Case_Agreement_Profile')
@@ -94,6 +90,7 @@ export const getAgreementHoldbackSettings = async (
     )
     .select([
       'Funding_Case_Agreement_Profile.egcs_fc_holdback',
+      'Funding_Case_Agreement_Profile.egcs_fc_currency',
       'Agency_Holdback_Basis.egcs_ay_holdbackbasis as holdback_basis_type'
     ])
     .where('Funding_Case_Agreement_Profile.id', '=', agreementId)
@@ -102,11 +99,18 @@ export const getAgreementHoldbackSettings = async (
     .where('Agency_Holdback_Basis._deleted', '=', false)
     .executeTakeFirst() as {
       egcs_fc_holdback?: unknown
+      egcs_fc_currency?: unknown
       holdback_basis_type?: unknown
     } | undefined
 
   if (row?.holdback_basis_type !== 'fullagreement' && row?.holdback_basis_type !== 'finalfiscal') {
     throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_UNSUPPORTED_HOLDBACK_BASIS')
+  }
+  if (typeof row.egcs_fc_currency !== 'string' || !AutomatedPaymentCurrencySchema.safeParse(row.egcs_fc_currency).success) {
+    throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_CURRENCY_INVALID', 'egcs_fc_currency')
+  }
+  if (currency !== undefined && row.egcs_fc_currency !== currency) {
+    throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', 'egcs_fc_currency')
   }
 
   return {
@@ -207,9 +211,12 @@ export const getSelectedPaymentPeriod = async (
 }
 
 /** Loads reconciled claim amounts and their fiscal-period positions for an agreement. */
-const getClaimRows = async (db: Db, agreementId: string): Promise<AmountPeriodRow[]> => {
+const getClaimRows = async (db: Db, agreementId: string, currency: string): Promise<AmountPeriodRow[]> => {
   const rows = await db
     .selectFrom('Funding_Case_Agreement_Claim_Reconcile_Line_Item')
+    .innerJoin('Funding_Case_Agreement_Claim_Line_Item',
+      'Funding_Case_Agreement_Claim_Line_Item.id',
+      'Funding_Case_Agreement_Claim_Reconcile_Line_Item.egcs_fc_lineitem')
     .innerJoin(
       'Funding_Case_Agreement_Claim_Reconcile',
       'Funding_Case_Agreement_Claim_Reconcile.id',
@@ -231,6 +238,8 @@ const getClaimRows = async (db: Db, agreementId: string): Promise<AmountPeriodRo
       'Agency_Fiscal_Year.egcs_ay_fiscalyear as fiscal_year_order'
     ])
     .where('Funding_Case_Agreement_Claim.egcs_fc_fundingagreement', '=', agreementId)
+    .where('Funding_Case_Agreement_Claim_Line_Item.egcs_fc_currency', '=', currency)
+    .where('Funding_Case_Agreement_Claim_Line_Item._deleted', '=', false)
     .where(sql<boolean>`EXISTS (
       SELECT 1
       FROM "Common_Completion" completion
@@ -288,7 +297,7 @@ const getLastClaimPosition = (claimRows: AmountPeriodRow[], selectedPosition: Pe
 }
 
 /** Loads active forecast line amounts and their fiscal-period positions for an agreement. */
-const getForecastRows = async (db: Db, agreementId: string): Promise<AmountPeriodRow[]> => {
+const getForecastRows = async (db: Db, agreementId: string, currency: string): Promise<AmountPeriodRow[]> => {
   const rows = await db
     .selectFrom('Funding_Case_Agreement_Forecast_Line_Item')
     .innerJoin(
@@ -307,6 +316,7 @@ const getForecastRows = async (db: Db, agreementId: string): Promise<AmountPerio
       'Agency_Fiscal_Year.egcs_ay_fiscalyear as fiscal_year_order'
     ])
     .where('Funding_Case_Agreement_Forecast.egcs_fc_fundingagreement', '=', agreementId)
+    .where('Funding_Case_Agreement_Forecast_Line_Item.egcs_fc_currency', '=', currency)
     .where('Funding_Case_Agreement_Forecast.egcs_fc_active', '=', true)
     .where('Funding_Case_Agreement_Forecast._deleted', '=', false)
     .where('Funding_Case_Agreement_Forecast_Line_Item._deleted', '=', false)
@@ -323,101 +333,12 @@ const getForecastRows = async (db: Db, agreementId: string): Promise<AmountPerio
   }))
 }
 
-/** Loads non-denied payments for an agreement, optionally excluding the payment being calculated. */
-const getPaymentRows = async (db: Db, agreementId: string, excludePaymentId?: string): Promise<AmountPeriodRow[]> => {
-  let query = db
-    .selectFrom('Funding_Case_Agreement_Payment')
-    .innerJoin(
-      'Funding_Case_Agreement_Commitment',
-      'Funding_Case_Agreement_Commitment.id',
-      'Funding_Case_Agreement_Payment.egcs_fc_fundingagreementcommitment'
-    )
-    .innerJoin('Funding_Case_Agreement_Budget_Fiscal_Year', join => join.on(
-      stableBudgetFiscalYearId, '=', sql.ref('Funding_Case_Agreement_Payment.egcs_fc_fiscalyear')
-    ))
-    .innerJoin('Funding_Case_Agreement_Budget_Version', 'Funding_Case_Agreement_Budget_Version.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_budgetversion')
-    .innerJoin('Agency_Fiscal_Year', 'Agency_Fiscal_Year.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear')
-    .select([
-      'Funding_Case_Agreement_Payment.id as id',
-      databaseNumericText(sql.ref('Funding_Case_Agreement_Payment.egcs_fc_paymentamount')).as('amount'),
-      'Funding_Case_Agreement_Payment.egcs_fc_periodend as month',
-      'Agency_Fiscal_Year.egcs_ay_fiscalyear as fiscal_year_order'
-    ])
-    .where('Funding_Case_Agreement_Commitment.egcs_fc_fundingagreement', '=', agreementId)
-    .where(sql<boolean>`NOT EXISTS (
-      SELECT 1
-      FROM "Common_Completion" completion
-      JOIN "Common_Workflow_Run" workflow
-        ON workflow.egcs_cn_completion = completion.id
-      JOIN "Common_Runtime" runtime
-        ON runtime.id = workflow.id
-       AND runtime._deleted = false
-      WHERE completion.egcs_cn_entitytype = 'fundingcasepayment'
-        AND completion.egcs_cn_entityid = "Funding_Case_Agreement_Payment".id
-        AND completion._deleted = false
-        AND runtime.egcs_cn_attempt = (
-          SELECT MAX(latest.egcs_cn_attempt)
-          FROM "Common_Workflow_Run" latest_run
-          JOIN "Common_Runtime" latest ON latest.id = latest_run.id
-          WHERE latest_run.egcs_cn_completion = completion.id
-            AND latest._deleted = false
-        )
-        AND runtime.egcs_cn_state IN (${sql.join(NEGATIVE_WORKFLOW_STATES.map(state => sql.lit(state)))})
-    )`)
-    .where('Funding_Case_Agreement_Payment._deleted', '=', false)
-    .where('Funding_Case_Agreement_Commitment._deleted', '=', false)
-    .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
-    .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
-    .where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)
-    .where('Agency_Fiscal_Year._deleted', '=', false)
-
-  if (excludePaymentId) {
-    query = query.where('Funding_Case_Agreement_Payment.id', '!=', excludePaymentId)
-  }
-
-  const rows = await query
-    .execute() as Array<{ id?: unknown, amount?: unknown, month?: unknown, fiscal_year_order?: unknown }>
-
-  return rows.map(row => ({
-    id: String(row.id ?? ''),
-    amount: parseDatabaseMoney(row.amount),
-    month: Number(row.month ?? 0),
-    fiscalYearOrder: Number(row.fiscal_year_order ?? 0)
-  }))
-}
-
-/** Sums holdback releases recorded on eligible payments through the selected period. */
-const getHoldbackReleasedToDate = async (
-  db: Db,
-  paymentRows: AmountPeriodRow[],
-  selectedPosition: PeriodPosition
-): Promise<AutomatedPaymentMoney> => {
-  const paymentIds = paymentRows
-    .filter(row => row.id && isOnOrBefore(row, selectedPosition))
-    .map(row => String(row.id))
-
-  if (paymentIds.length === 0) {
-    return ZERO_AUTOMATED_PAYMENT_MONEY
-  }
-
-  const rows = await db
-    .selectFrom('extensions.kv_entry')
-    .select('value')
-    .where('extension_key', '=', EXTENSION_KEY)
-    .where('owner_type', '=', 'fundingcasepayment')
-    .where('owner_id', 'in', paymentIds)
-    .where('config_key', '=', PAYMENT_METADATA_KEY)
-    .where('_deleted', '=', false)
-    .execute() as Array<{ value?: unknown }>
-
-  return sumAutomatedPaymentMoney(rows.map(row => parseAutomatedPaymentExtensionPayload(row.value).holdbackReleaseAmount))
-}
-
 /** Aggregates agreement, final-year, and future-year budget totals for the selected period. */
 const getBudgetTotals = async (
   db: Db,
   agreementId: string,
-  selectedPosition: PeriodPosition
+  selectedPosition: PeriodPosition,
+  currency: string
 ) => {
   const rows = await db
     .selectFrom('Funding_Case_Agreement_Budget_Line_Item')
@@ -437,6 +358,7 @@ const getBudgetTotals = async (
       'Agency_Fiscal_Year.egcs_ay_fiscalyear as fiscal_year_order'
     ])
     .where('Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fundingagreement', '=', agreementId)
+    .where('Funding_Case_Agreement_Budget_Line_Item.egcs_fc_currency', '=', currency)
     .where('Funding_Case_Agreement_Budget_Line_Item._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
     .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
@@ -444,11 +366,24 @@ const getBudgetTotals = async (
     .where('Agency_Fiscal_Year._deleted', '=', false)
     .execute() as Array<{ amount?: unknown, fiscal_year_order?: unknown }>
 
+  // The Agreement horizon includes an empty final fiscal year; funding-line presence does not shorten it.
+  const fiscalYears = await db
+    .selectFrom('Funding_Case_Agreement_Budget_Fiscal_Year')
+    .innerJoin('Funding_Case_Agreement_Budget_Version', 'Funding_Case_Agreement_Budget_Version.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_budgetversion')
+    .innerJoin('Agency_Fiscal_Year', 'Agency_Fiscal_Year.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear')
+    .where('Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fundingagreement', '=', agreementId)
+    .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
+    .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
+    .where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)
+    .where('Agency_Fiscal_Year._deleted', '=', false)
+    .select('Agency_Fiscal_Year.egcs_ay_fiscalyear as fiscal_year_order')
+    .execute() as Array<{ fiscal_year_order: unknown }>
+
   const normalizedRows = rows.map(row => ({
     amount: parseDatabaseMoney(row.amount),
     fiscalYearOrder: Number(row.fiscal_year_order ?? 0)
   }))
-  const finalFiscalYearOrder = Math.max(...normalizedRows.map(row => row.fiscalYearOrder), selectedPosition.fiscalYearOrder)
+  const finalFiscalYearOrder = Math.max(...fiscalYears.map(row => Number(row.fiscal_year_order)), selectedPosition.fiscalYearOrder)
 
   return {
     agreementTotal: sumAutomatedPaymentMoney(normalizedRows.map(row => row.amount)),
@@ -464,6 +399,7 @@ export const calculateAutomatedPaymentFromDb = async (
   streamConfig: unknown,
   agreementFinancials: Pick<GcsExtensionAgreementFinancials, 'getCommitmentPaymentCapacity' | 'getRecordedPaidToDate'>
 ): Promise<AutomatedPaymentServerCalculation> => {
+  const currency = AutomatedPaymentCurrencySchema.parse(input.currency)
   const config = parseAutomatedPaymentsStreamConfig(streamConfig)
   if (!config.enabledPaymentTypes.includes(input.paymentType)) {
     return {
@@ -474,60 +410,54 @@ export const calculateAutomatedPaymentFromDb = async (
       holdbackAmount: ZERO_AUTOMATED_PAYMENT_MONEY,
       holdbackReleaseAmount: ZERO_AUTOMATED_PAYMENT_MONEY,
       availableBeforeHoldback: ZERO_AUTOMATED_PAYMENT_MONEY,
-      currency: 'CAD',
+      currency: currency.toUpperCase(),
       details: []
     }
   }
 
+  const holdbackSettings = await getAgreementHoldbackSettings(db, input.agreementId, currency)
   const selectedPosition = await getSelectedPaymentPeriod(db, input.agreementId, input.fiscalYearId, input.periodEnd)
   const [
     claimRows,
     forecastRows,
-    paymentRows,
     commitmentRemaining,
     budgetTotals,
-    holdbackSettings,
     recordedPaid
   ] = await Promise.all([
-    getClaimRows(db, input.agreementId),
-    getForecastRows(db, input.agreementId),
-    getPaymentRows(db, input.agreementId, input.excludePaymentId),
+    getClaimRows(db, input.agreementId, currency),
+    getForecastRows(db, input.agreementId, currency),
     agreementFinancials.getCommitmentPaymentCapacity({
       fiscalYearId: input.fiscalYearId,
       commitmentTypeId: input.commitmentType,
+      currency,
       ...(input.excludePaymentId ? { excludePaymentId: input.excludePaymentId } : {})
     }).then(result => parseDatabaseAggregateMoney(result.capacityAmount)),
-    getBudgetTotals(db, input.agreementId, selectedPosition),
-    getAgreementHoldbackSettings(db, input.agreementId),
-    agreementFinancials.getRecordedPaidToDate({ fiscalYearId: input.fiscalYearId, periodEnd: input.periodEnd,
+    getBudgetTotals(db, input.agreementId, selectedPosition, currency),
+    agreementFinancials.getRecordedPaidToDate({ fiscalYearId: input.fiscalYearId, periodEnd: input.periodEnd, currency,
       ...(input.excludePaymentId ? { excludePaymentId: input.excludePaymentId } : {}) })
   ])
+  const totalPaymentsToDate = parseDatabaseAggregateMoney(recordedPaid.recordedPaidAmount)
+  if ((recordedPaid.currency === null && totalPaymentsToDate !== ZERO_AUTOMATED_PAYMENT_MONEY)
+    || (recordedPaid.currency !== null && recordedPaid.currency.toLowerCase() !== currency)) {
+    throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', 'egcs_fc_currency')
+  }
   const lastClaimPosition = getLastClaimPosition(claimRows, selectedPosition)
   const claimCutoff = lastClaimPosition ?? { fiscalYearOrder: selectedPosition.fiscalYearOrder, month: -1 }
   const totalClaimsToLastClaimMonth = sumPeriodRows(claimRows, claimCutoff)
   const totalForecastToLastClaimMonth = lastClaimPosition ? sumPeriodRows(forecastRows, lastClaimPosition) : ZERO_AUTOMATED_PAYMENT_MONEY
   const totalForecastToPeriodEnd = sumPeriodRows(forecastRows, selectedPosition)
-  const totalPaymentsToDate = parseDatabaseAggregateMoney(recordedPaid.recordedPaidAmount)
   const forecastUnclaimedCurrentFiscalYear = sumAutomatedPaymentMoney(forecastRows.filter(row => {
     const latestClaimMonthInSelectedFiscalYear = lastClaimPosition?.fiscalYearOrder === selectedPosition.fiscalYearOrder
       ? lastClaimPosition.month
       : -1
     return row.fiscalYearOrder === selectedPosition.fiscalYearOrder && row.month > latestClaimMonthInSelectedFiscalYear
   }).map(row => row.amount))
-  const legacyHoldback = calculateLegacyDec041HoldbackAmount(
-    holdbackSettings.holdbackBasis === 'finalfiscal' ? budgetTotals.finalFiscalYearTotal : budgetTotals.agreementTotal,
-    holdbackSettings.holdbackPercent
-  )
   const availableForDisbursementBeforeHoldback = subtractAutomatedPaymentMoney(
-    subtractAutomatedPaymentMoney(
-      addAutomatedPaymentMoney(addAutomatedPaymentMoney(totalClaimsToLastClaimMonth, forecastUnclaimedCurrentFiscalYear), budgetTotals.futureFiscalYearTotal),
-      totalPaymentsToDate
-    ),
-    legacyHoldback
+    addAutomatedPaymentMoney(addAutomatedPaymentMoney(totalClaimsToLastClaimMonth, forecastUnclaimedCurrentFiscalYear), budgetTotals.futureFiscalYearTotal),
+    totalPaymentsToDate
   )
-  const holdbackAlreadyReleased = await getHoldbackReleasedToDate(db, paymentRows, selectedPosition)
-
   const result = calculateAutomatedPaymentAmount({
+    currency,
     paymentType: input.paymentType,
     periodEnd: input.periodEnd,
     totalClaimsToLastClaimMonth,
@@ -538,7 +468,6 @@ export const calculateAutomatedPaymentFromDb = async (
     agreementTotal: budgetTotals.agreementTotal,
     finalFiscalYearTotal: budgetTotals.finalFiscalYearTotal,
     availableForDisbursementBeforeHoldback,
-    holdbackAlreadyReleased,
     releaseHoldback: input.releaseHoldback,
     holdbackReleaseAmount: input.holdbackReleaseAmount
   }, holdbackSettings)
