@@ -3,6 +3,7 @@ import type { GcsExtensionRouteEvent } from '@gcs-ssc/extensions/server'
 
 const readBodyMock = vi.fn()
 const calculateAutomatedPaymentFromDbMock = vi.fn()
+const financials = { getCommitmentPaymentCapacity: vi.fn(), getCommitmentLinePaymentCoverage: vi.fn(), validatePaymentAllocations: vi.fn() }
 const validCommitmentTypeId = '9223372036854775807'
 const validFiscalYearId = '1'
 const validBody = {
@@ -125,7 +126,7 @@ describe('gcs automated payments calculation route', () => {
     await expect(handler(createRouteEvent({
       params: { agreementId: 'agreement-1' },
       $db: db,
-      gcsExtension: { config: streamConfig }
+      gcsExtension: { config: streamConfig, agreementFinancials: financials }
     }))).resolves.toBe(result)
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(db, {
       agreementId: 'agreement-1',
@@ -136,6 +137,6 @@ describe('gcs automated payments calculation route', () => {
       submittedAmount: '90.50',
       releaseHoldback: true,
       holdbackReleaseAmount: '5.25'
-    }, streamConfig)
+    }, streamConfig, financials)
   })
 })

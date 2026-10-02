@@ -4,11 +4,12 @@ export default defineGcsExtension({
   // Host-managed configuration, KV and secrets keep their host ownership rules.
   auditOwnership: defineGcsAuditOwnership([]),
   key: 'gcs-automated-payments',
-  sdkVersion: '^0.3.2',
+  sdkVersion: '^0.3.5',
   requiredHostCapabilities: [
     'audit-ownership',
     'stream-config-modal',
     'payment-amount-calculators',
+    'agreement-payment-capacity',
     'server-handlers',
     'server-handler-rbac',
     'extension-ui',

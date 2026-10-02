@@ -1,4 +1,4 @@
-import { defineGcsExtensionRouteHandler } from '@gcs-ssc/extensions/server'
+import { defineGcsExtensionRouteHandler, requireGcsExtensionAgreementFinancials } from '@gcs-ssc/extensions/server'
 import {
   AutomatedPaymentCalculateSchema,
   EXTENSION_KEY,
@@ -10,7 +10,8 @@ import {
   createAutomatedPaymentValidationError
 } from '../errors.ts'
 
-export default defineGcsExtensionRouteHandler(async ({ params, db, config, readBody }) => {
+export default defineGcsExtensionRouteHandler(async context => {
+  const { params, db, config, readBody } = context
   const agreementId = params.agreementId
   if (!agreementId) {
     throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_AGREEMENT_REQUIRED')
@@ -36,6 +37,7 @@ export default defineGcsExtensionRouteHandler(async ({ params, db, config, readB
       releaseHoldback: extensionPayload.releaseHoldback,
       holdbackReleaseAmount: extensionPayload.holdbackReleaseAmount
     },
-    config
+    config,
+    requireGcsExtensionAgreementFinancials(context)
   )
 })

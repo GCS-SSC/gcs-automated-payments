@@ -8,12 +8,14 @@ const savePaymentMetadataMock = vi.fn()
 const getPaymentMetadataMock = vi.fn()
 const lockAutomatedPaymentAgreementMock = vi.fn()
 const guardAutomatedPaymentsActivationMock = vi.fn()
+const financials = { getCommitmentPaymentCapacity: vi.fn() }
 const validCommitmentTypeId = '9223372036854775807'
 const validFiscalYearId = '1'
 
 vi.mock('@gcs-ssc/extensions/server', () => ({
   createGcsExtensionUserError: (options: Record<string, unknown>) => Object.assign(new Error(String(options.message)), options),
   defineGcsExtensionNitroPlugin: (plugin: unknown) => plugin,
+  requireGcsExtensionAgreementFinancials: () => financials,
   registerGcsExtensionAgreementPaymentMutationGuard: (...args: unknown[]) =>
     registerGcsExtensionAgreementPaymentMutationGuardMock(...args),
   registerGcsExtensionCreateOperationHandler: (...args: unknown[]) =>
@@ -165,7 +167,7 @@ describe('gcs automated payments create hooks', () => {
       submittedAmount: '100.00',
       releaseHoldback: true,
       holdbackReleaseAmount: '10.00'
-    }), { enabledPaymentTypes: ['advance'] })
+    }), { enabledPaymentTypes: ['advance'] }, financials)
   })
 
   it('continues without validating ceilings outside the before-create phase', async () => {
@@ -195,7 +197,7 @@ describe('gcs automated payments create hooks', () => {
     })).resolves.toEqual({ status: 'continue' })
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(trx, expect.objectContaining({
       excludePaymentId: 'payment-1'
-    }), {})
+    }), {}, financials)
     expect(savePaymentMetadataMock).toHaveBeenCalledWith(trx, 'payment-1', {
       releaseHoldback: true,
       holdbackReleaseAmount: '8.00'
@@ -262,7 +264,7 @@ describe('gcs automated payments create hooks', () => {
       holdbackReleaseAmount: '12.00',
       submittedAmount: '50.01',
       excludePaymentId: 'payment-1'
-    }), { enabledPaymentTypes: ['advance'] })
+    }), { enabledPaymentTypes: ['advance'] }, financials)
   })
 
   it.each([

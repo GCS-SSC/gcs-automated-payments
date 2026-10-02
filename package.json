@@ -15,7 +15,7 @@
     "vue": "*"
   },
   "dependencies": {
-    "@gcs-ssc/extensions": "^0.3.2",
+    "@gcs-ssc/extensions": "^0.3.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {

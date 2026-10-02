@@ -17,7 +17,8 @@ import {
   type AutomatedPaymentsHoldbackSettings
 } from '../shared/automated-payments.ts'
 import { createAutomatedPaymentUserError } from './errors.ts'
-import { databaseNumericText, parseDatabaseMoney } from './numeric.ts'
+import { databaseNumericText, parseDatabaseMoney, parseDatabaseAggregateMoney } from './numeric.ts'
+import type { GcsExtensionAgreementFinancials } from '@gcs-ssc/extensions/server'
 
 type Db = Kysely<Record<string, Record<string, unknown>>>
 
@@ -412,100 +413,6 @@ const getHoldbackReleasedToDate = async (
   return sumAutomatedPaymentMoney(rows.map(row => parseAutomatedPaymentExtensionPayload(row.value).holdbackReleaseAmount))
 }
 
-/** Calculates the unpaid balance of approved active commitment lines for a fiscal year and type. */
-const getCommitmentRemaining = async (
-  db: Db,
-  agreementId: string,
-  fiscalYearId: string,
-  commitmentType: string
-): Promise<AutomatedPaymentMoney> => {
-  const commitmentLines = await db
-    .selectFrom('Funding_Case_Agreement_Commitment_Line')
-    .innerJoin(
-      'Funding_Case_Agreement_Commitment',
-      'Funding_Case_Agreement_Commitment.id',
-      'Funding_Case_Agreement_Commitment_Line.egcs_fc_commitment'
-    )
-    .innerJoin(
-      'Transfer_Payment_Stream_Chart_of_Account',
-      'Transfer_Payment_Stream_Chart_of_Account.id',
-      'Funding_Case_Agreement_Commitment_Line.egcs_fc_transferpaymentstreamchartofaccount'
-    )
-    .innerJoin(
-      'Agency_Chart_of_Account',
-      'Agency_Chart_of_Account.id',
-      'Transfer_Payment_Stream_Chart_of_Account.egcs_tp_agencychartofaccount'
-    )
-    .innerJoin(
-      'Funding_Case_Agreement_Budget_Fiscal_Year',
-      'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear',
-      'Agency_Chart_of_Account.egcs_ay_fiscalyear'
-    )
-    .innerJoin('Funding_Case_Agreement_Budget_Version', 'Funding_Case_Agreement_Budget_Version.id', 'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_budgetversion')
-    .select([
-      'Funding_Case_Agreement_Commitment_Line.id as id',
-      databaseNumericText(sql.ref('Funding_Case_Agreement_Commitment_Line.egcs_fc_amount')).as('amount')
-    ])
-    .where('Funding_Case_Agreement_Commitment.egcs_fc_fundingagreement', '=', agreementId)
-    .where('Funding_Case_Agreement_Commitment.egcs_fc_type', '=', commitmentType)
-    .where('Funding_Case_Agreement_Commitment.egcs_fc_active', '=', true)
-    .where(stableBudgetFiscalYearId, '=', fiscalYearId)
-    .where('Funding_Case_Agreement_Commitment._deleted', '=', false)
-    .where('Funding_Case_Agreement_Commitment_Line._deleted', '=', false)
-    .where('Transfer_Payment_Stream_Chart_of_Account._deleted', '=', false)
-    .where('Agency_Chart_of_Account._deleted', '=', false)
-    .where('Funding_Case_Agreement_Budget_Fiscal_Year._deleted', '=', false)
-    .where('Funding_Case_Agreement_Budget_Version.egcs_fc_iscurrent', '=', true)
-    .where('Funding_Case_Agreement_Budget_Version._deleted', '=', false)
-    .execute() as Array<{ id?: unknown, amount?: unknown }>
-
-  const lineTotal = sumRows(commitmentLines)
-  if (compareAutomatedPaymentMoney(lineTotal, ZERO_AUTOMATED_PAYMENT_MONEY) <= 0) {
-    return ZERO_AUTOMATED_PAYMENT_MONEY
-  }
-
-  const lineIds = commitmentLines.map(line => String(line.id ?? '')).filter(id => id.length > 0)
-  if (lineIds.length === 0) {
-    return lineTotal
-  }
-
-  const paymentLines = await db
-    .selectFrom('Funding_Case_Agreement_Payment_Line')
-    .innerJoin(
-      'Funding_Case_Agreement_Payment',
-      'Funding_Case_Agreement_Payment.id',
-      'Funding_Case_Agreement_Payment_Line.egcs_fc_fundingagreementpayment'
-    )
-    .select(databaseNumericText(sql.ref('Funding_Case_Agreement_Payment_Line.egcs_fc_amount')).as('amount'))
-    .where('Funding_Case_Agreement_Payment_Line.egcs_fc_fundingagreementcommitmentline', 'in', lineIds)
-    .where(sql<boolean>`NOT EXISTS (
-      SELECT 1
-      FROM "Common_Completion" completion
-      JOIN "Common_Workflow_Run" workflow
-        ON workflow.egcs_cn_completion = completion.id
-      JOIN "Common_Runtime" runtime
-        ON runtime.id = workflow.id
-       AND runtime._deleted = false
-      WHERE completion.egcs_cn_entitytype = 'fundingcasepayment'
-        AND completion.egcs_cn_entityid = "Funding_Case_Agreement_Payment".id
-        AND completion._deleted = false
-        AND runtime.egcs_cn_attempt = (
-          SELECT MAX(latest.egcs_cn_attempt)
-          FROM "Common_Workflow_Run" latest_run
-          JOIN "Common_Runtime" latest ON latest.id = latest_run.id
-          WHERE latest_run.egcs_cn_completion = completion.id
-            AND latest._deleted = false
-        )
-        AND runtime.egcs_cn_state IN (${sql.join(NEGATIVE_WORKFLOW_STATES.map(state => sql.lit(state)))})
-    )`)
-    .where('Funding_Case_Agreement_Payment_Line._deleted', '=', false)
-    .where('Funding_Case_Agreement_Payment._deleted', '=', false)
-    .execute() as Array<{ amount?: unknown }>
-
-  const remaining = subtractAutomatedPaymentMoney(lineTotal, sumRows(paymentLines))
-  return compareAutomatedPaymentMoney(remaining, ZERO_AUTOMATED_PAYMENT_MONEY) < 0 ? ZERO_AUTOMATED_PAYMENT_MONEY : remaining
-}
-
 /** Aggregates agreement, final-year, and future-year budget totals for the selected period. */
 const getBudgetTotals = async (
   db: Db,
@@ -554,7 +461,8 @@ const getBudgetTotals = async (
 export const calculateAutomatedPaymentFromDb = async (
   db: Db,
   input: AutomatedPaymentServerInput,
-  streamConfig: unknown
+  streamConfig: unknown,
+  agreementFinancials: Pick<GcsExtensionAgreementFinancials, 'getCommitmentPaymentCapacity'>
 ): Promise<AutomatedPaymentServerCalculation> => {
   const config = parseAutomatedPaymentsStreamConfig(streamConfig)
   if (!config.enabledPaymentTypes.includes(input.paymentType)) {
@@ -583,7 +491,11 @@ export const calculateAutomatedPaymentFromDb = async (
     getClaimRows(db, input.agreementId),
     getForecastRows(db, input.agreementId),
     getPaymentRows(db, input.agreementId, input.excludePaymentId),
-    getCommitmentRemaining(db, input.agreementId, input.fiscalYearId, input.commitmentType),
+    agreementFinancials.getCommitmentPaymentCapacity({
+      fiscalYearId: input.fiscalYearId,
+      commitmentTypeId: input.commitmentType,
+      ...(input.excludePaymentId ? { excludePaymentId: input.excludePaymentId } : {})
+    }).then(result => parseDatabaseAggregateMoney(result.capacityAmount)),
     getBudgetTotals(db, input.agreementId, selectedPosition),
     getAgreementHoldbackSettings(db, input.agreementId)
   ])

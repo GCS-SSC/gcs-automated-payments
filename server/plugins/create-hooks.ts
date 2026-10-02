@@ -1,5 +1,6 @@
 import {
   defineGcsExtensionNitroPlugin,
+  requireGcsExtensionAgreementFinancials,
   registerGcsExtensionAgreementPaymentMutationGuard,
   registerGcsExtensionCreateOperationHandler
 } from '@gcs-ssc/extensions/server'
@@ -84,7 +85,8 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
           holdbackReleaseAmount: extensionPayload.holdbackReleaseAmount,
           excludePaymentId: String(context.createdRecord.id)
         },
-        context.config
+        context.config,
+        requireGcsExtensionAgreementFinancials(context)
       )
       await savePaymentMetadata(
         context.trx as Parameters<typeof savePaymentMetadata>[0],
@@ -113,7 +115,8 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
         releaseHoldback: extensionPayload.releaseHoldback,
         holdbackReleaseAmount: extensionPayload.holdbackReleaseAmount
       },
-      context.config
+      context.config,
+      requireGcsExtensionAgreementFinancials(context)
     )
 
     if (!calculation.enabled) {
@@ -193,7 +196,7 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
       releaseHoldback: metadata.releaseHoldback,
       holdbackReleaseAmount: metadata.holdbackReleaseAmount,
       excludePaymentId: context.paymentId
-    }, streamConfig.config)
+    }, streamConfig.config, requireGcsExtensionAgreementFinancials(context))
     const nextAmount = changes.egcs_fc_paymentamount === undefined
       ? parseDatabaseMoney(payment.egcs_fc_paymentamount)
       : parseAutomatedPaymentMoney(changes.egcs_fc_paymentamount as string | number)

@@ -1,5 +1,5 @@
 import { expect, test, type APIResponse, type Page } from '@playwright/test'
-import type { AutomatedPaymentCalculationResult } from '../../shared/automated-payments'
+import { addAutomatedPaymentMoney, subtractAutomatedPaymentMoney, parseAutomatedPaymentMoney, type AutomatedPaymentCalculationResult } from '../../shared/automated-payments'
 
 const baseUrl = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000'
 
@@ -157,6 +157,54 @@ const approveAllSteps = async (
   throw new Error(`Approval runtime for ${entityType} ${entityId} still had actionable steps after 5 approvals.`)
 }
 
+// Exercise the configured review and recommendation gates before the final Payment approval.
+const finalizeSourcePayment = async (page: Page, approver: Page, paymentId: string) => {
+  type Recommendation = { id: string; runtimeState: string; egcs_cn_revision: number;
+    egcs_cn_definition: { sections: Array<{ subSections: Array<{ questions: Array<{ key: string;
+      type: string; required: boolean; isResult: boolean; options?: Array<{ key: string; outcome?: string }> }> }> }> } }
+  type Runtime = { current: { runtimeState: string } | null;
+    reviews: Array<{ id: string; egcs_cn_reviewtype: string }>; recommendations: Recommendation[] }
+  const runtimeUrl = `/api/workflows/runtime?entityType=fundingcasepayment&entityId=${paymentId}&purpose=approval_submission`
+  const readRuntime = async () => {
+    const response = await page.request.get(runtimeUrl)
+    await expectOk(response, 'Read source Payment workflow')
+    return await responseJson<Runtime>(response)
+  }
+  const checklist = (await readRuntime()).reviews.find(review => review.egcs_cn_reviewtype === 'checklist')
+  if (checklist) {
+    await page.goto(`/en/checklists/${checklist.id}`)
+    const answers = page.getByRole('radio', { name: 'Pass', exact: true })
+    await expect(answers.first()).toBeVisible()
+    for (let index = 0; index < await answers.count(); index += 1) await answers.nth(index).check()
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await page.getByRole('button', { name: /^Additional Review/ }).click()
+    await page.getByLabel('Completion Comment', { exact: true }).fill('Verified financial evidence for the shared capacity journey.')
+    await page.getByRole('button', { name: 'Complete Review', exact: true }).click()
+  }
+  for (let index = 0; index < 5; index += 1) {
+    const recommendation = (await readRuntime()).recommendations.find(item => item.runtimeState === 'active')
+    if (!recommendation) break
+    const responses = recommendation.egcs_cn_definition.sections.flatMap(section => section.subSections)
+      .flatMap(section => section.questions).filter(question => question.required).map(question => ({
+        questionKey: question.key,
+        value: question.type === 'radio'
+          ? (question.isResult ? question.options!.find(option => option.outcome === 'recommended')!.key : question.options![0]!.key)
+          : 'Financial evidence verified for the shared capacity journey.'
+      }))
+    const recommendationUrl = `/api/workflows/recommendation?entityType=fundingcasepayment&entityId=${paymentId}&purpose=approval_submission`
+    await expectOk(await page.request.put(recommendationUrl, { data: { revision: recommendation.egcs_cn_revision, responses } }), 'Save Payment recommendation')
+    const refreshed = (await readRuntime()).recommendations.find(item => item.id === recommendation.id)!
+    await expectOk(await page.request.post(recommendationUrl.replace('/recommendation?', '/recommendation/submit?'), {
+      data: { revision: refreshed.egcs_cn_revision, responses }
+    }), 'Submit Payment recommendation')
+    await approveAllSteps(page, 'commonrecommendation', recommendation.id)
+    await approveAllSteps(approver, 'commonrecommendation', recommendation.id)
+  }
+  await approveAllSteps(page, 'fundingcasepayment', paymentId)
+  await approveAllSteps(approver, 'fundingcasepayment', paymentId)
+  expect((await readRuntime()).current?.runtimeState).toBe('approved')
+}
+
 const calculateAdvance = async (
   page: Page,
   commitmentType: string,
@@ -190,8 +238,7 @@ const calculateAdvance = async (
 const openAgreementPaymentsTab = async (page: Page, agreementId: string) => {
   await page.goto(`/en/agreements/${agreementId}`)
   const tab = page.getByRole('tab', { name: 'Payments', exact: true })
-  await tab.scrollIntoViewIfNeeded()
-  await expect(tab).toBeInViewport()
+  await expect(tab).toBeEnabled()
   await tab.click()
   await expect(tab).toHaveAttribute('aria-selected', 'true')
 }
@@ -370,8 +417,8 @@ test.describe.serial('Automated payment lifecycle', () => {
     await expect(paymentDialog.getByText('Automated payment ceiling', { exact: true })).toHaveCount(0)
   })
 
-  test('runs allocation, commitment, forecast, and automatically calculated advance payment', async ({ page, browser }) => {
-    test.setTimeout(90_000)
+  test('runs allocation, commitment, forecast, and automatically calculated advance payment', async ({ page, browser }, testInfo) => {
+    test.setTimeout(180_000)
     await login(page, 'root@example.com', 'password123')
 
     const agreementResponse = await page.request.get(`/api/agreements/${target.agreementId}`)
@@ -643,6 +690,7 @@ test.describe.serial('Automated payment lifecycle', () => {
           egcs_fc_fundingagreementbudgetlineitem: budgetLineItemId,
           egcs_fc_month: month,
           egcs_fc_amount: forecastMonthlyAmount,
+          egcs_fc_totalamount: forecastMonthlyAmount,
           egcs_fc_currency: 'cad',
           egcs_fc_version: 0,
           egcs_fc_status: String(inProgressStatusId)
@@ -733,8 +781,135 @@ test.describe.serial('Automated payment lifecycle', () => {
     expect(String(advancePaymentDetail.egcs_fc_status)).toBe(draftStatusId)
     expect(advancePaymentDetail.lines.length).toBeGreaterThan(0)
 
+    // Finality comes from the configured Workflow's terminal business output.
+    const paidStatus = statusCatalog.find(status => status.agencyId === target.agencyId && status.nameEn === 'Paid' && status.terminal)!
+    expect(paidStatus).toBeTruthy()
+    const workflowListResponse = await page.request.get(`/api/transfer-payments/${target.programId}/streams/${target.streamId}/workflows?page=1&limit=100`)
+    await expectOk(workflowListResponse, 'Read Payment Workflow configuration')
+    const workflowList = await responseJson<{ items: Array<IdRow & { egcs_tp_workflow: string; egcs_cn_entitytype: string; egcs_cn_purpose: string; publicationState: string }> }>(workflowListResponse)
+    const paymentWorkflows = workflowList.items.filter(item => item.egcs_cn_entitytype === 'fundingcasepayment'
+      && item.egcs_cn_purpose === 'approval_submission' && item.publicationState === 'published')
+    expect(paymentWorkflows.length).toBeGreaterThan(0)
+    for (const workflow of paymentWorkflows) {
+      const workflowPath = `/api/agency/${target.agencyId}/workflows/${workflow.egcs_tp_workflow}`
+      const detailResponse = await page.request.get(workflowPath)
+      await expectOk(detailResponse, 'Read final Payment Workflow member')
+      const detail = await responseJson<{ members: IdRow[] }>(detailResponse)
+      const finalMember = detail.members.at(-1)!
+      await expectOk(await page.request.patch(`${workflowPath}/members/${finalMember.id}`, {
+        data: { egcs_cn_successstatus: String(paidStatus.id) }
+      }), 'Configure terminal Paid output')
+      await expectOk(await page.request.post(`${workflowPath}/publish`), 'Publish terminal Payment output')
+    }
+
     await completeEntity(page, 'fundingcasepayment', advancePaymentId, 'Lifecycle test advance payment completion.')
-    await approveAllSteps(approvalPage, 'fundingcasepayment', advancePaymentId)
+    await finalizeSourcePayment(page, approvalPage, advancePaymentId)
+
+    // The owning extension consumes the host capacity contract as JVs finalize and reverse.
+    const capacityBefore = (await calculateAdvance(page, commitmentType, fiscalYearId, 2))
+      .details.find(detail => detail.label === 'commitmentRemaining')!.value
+    const usersResponse = await page.request.get('/api/users/lookups?status=active&search=root%40example.com')
+    await expectOk(usersResponse, 'Find fixture creator')
+    const users = await responseJson<{ items: Array<{ id: string; egcs_cn_email: string }> }>(usersResponse)
+    const root = users.items.find(user => user.egcs_cn_email === 'root@example.com')!
+    const jvRoleResponse = await page.request.post('/api/roles', { data: {
+      name_en: `Capacity fixture JV ${advancePaymentId}`, name_fr: `PJ capacité ${advancePaymentId}`,
+      agency_id: target.agencyId, transfer_payment_ids: [],
+      permissions: [{ subject: 'journal_voucher', access_level: 'contributor' }]
+    } })
+    await expectOk(jvRoleResponse, 'Grant explicit fixture JV authority')
+    const jvRole = await responseJson<IdRow>(jvRoleResponse)
+    await expectOk(await page.request.post(`/api/users/${root.id}/assignments`, { data: { user_id: root.id, role_id: String(jvRole.id), agency_id: target.agencyId } }), 'Assign fixture JV role')
+    await page.context().clearCookies()
+    await login(page, 'root@example.com', 'password123')
+    const createJvResponse = await page.request.post('/api/journal-vouchers', { data: {
+      egcs_fc_payment: advancePaymentId, egcs_fc_requesteddate: '2026-10-01',
+      egcs_fc_narrative_en: 'Verify the shared host capacity service.', egcs_fc_narrative_fr: 'Vérifier le service de capacité commun.'
+    } })
+    await expectOk(createJvResponse, 'Prepare calculator capacity fixture')
+    const jv = await responseJson<IdRow>(createJvResponse)
+    const jvDetailResponse = await page.request.get(`/api/journal-vouchers/${jv.id}`)
+    await expectOk(jvDetailResponse, 'Read calculator capacity fixture')
+    const jvDetail = await responseJson<{ egcs_fc_agencyfiscalyear: string; egcs_fc_lines: Array<{
+      egcs_fc_kind: string; egcs_fc_commitmentline: string; egcs_fc_chartofaccount: string; egcs_fc_amount: string
+    }> }>(jvDetailResponse)
+    const jvAllocations = jvDetail.egcs_fc_lines.filter(line => line.egcs_fc_kind === 'corrected')
+    const sourceAllocation = jvAllocations.find(line => BigInt(line.egcs_fc_amount.replace('.', '')) >= BigInt(1000))!
+    expect(sourceAllocation).toBeTruthy()
+    const chartResponse = await page.request.post(`/api/agency/${target.agencyId}/chart-of-accounts`, { data: {
+      egcs_ay_fiscalyear: jvDetail.egcs_fc_agencyfiscalyear,
+      egcs_ay_accountingdimensions: [{ label_en: 'Account', label_fr: 'Compte', value: `CAP-${jv.id}` }]
+    } })
+    await expectOk(chartResponse, 'Create an unmatched capacity-fixture coding')
+    const chart = await responseJson<IdRow>(chartResponse)
+    const linkedResponse = await page.request.post(`/api/transfer-payments/${target.programId}/streams/${target.streamId}/chart-of-accounts`, {
+      data: { egcs_tp_agencychartofaccount: String(chart.id) }
+    })
+    await expectOk(linkedResponse, 'Link capacity-fixture coding')
+    const linked = await responseJson<IdRow>(linkedResponse)
+    const correctedAllocations = {
+      egcs_fc_requesteddate: '2026-10-01',
+      egcs_fc_narrative_en: 'Verify the shared host capacity contract.',
+      egcs_fc_narrative_fr: 'Vérifier le contrat partagé de capacité du système hôte.',
+      egcs_fc_allocations: [
+        ...jvAllocations.map(line => ({ egcs_fc_commitmentline: line.egcs_fc_commitmentline,
+          egcs_fc_chartofaccount: line.egcs_fc_chartofaccount,
+          egcs_fc_amount: line === sourceAllocation ? subtractAutomatedPaymentMoney(parseAutomatedPaymentMoney(line.egcs_fc_amount), parseAutomatedPaymentMoney('10.00')) : line.egcs_fc_amount })),
+        { egcs_fc_commitmentline: sourceAllocation.egcs_fc_commitmentline, egcs_fc_chartofaccount: String(linked.id), egcs_fc_amount: '10.00' }
+      ]
+    }
+    const editJvResponse = await page.request.patch(`/api/journal-vouchers/${jv.id}`, { data: correctedAllocations })
+    await expectOk(editJvResponse, 'Split the capacity-fixture allocation')
+    const readCapacity = async () => (await calculateAdvance(page, commitmentType, fiscalYearId, 2))
+      .details.find(detail => detail.label === 'commitmentRemaining')!.value
+    expect(await readCapacity()).toBe(capacityBefore)
+    await completeEntity(page, 'fundingcasejournalvoucher', String(jv.id), 'Shared capacity service fixture.')
+    expect(await readCapacity()).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
+    const reversalResponse = await page.request.post(`/api/journal-vouchers/${jv.id}/reversal`, { data: {
+      egcs_fc_requesteddate: '2026-10-01', egcs_fc_narrative_en: 'Restore the calculator baseline.',
+      egcs_fc_narrative_fr: 'Rétablir la base du calculateur.'
+    } })
+    await expectOk(reversalResponse, 'Prepare the capacity-fixture reversal')
+    const reversal = await responseJson<IdRow>(reversalResponse)
+    expect(await readCapacity()).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
+    await completeEntity(page, 'fundingcasejournalvoucher', String(reversal.id), 'Restore shared capacity baseline.')
+    expect(await readCapacity()).toBe(capacityBefore)
+
+    // Spend the newly restored coding capacity through the other extension's real Payment generator.
+    const replacementResponse = await page.request.post('/api/journal-vouchers', { data: {
+      egcs_fc_payment: advancePaymentId, egcs_fc_replacementof: String(reversal.id),
+      egcs_fc_requesteddate: '2026-10-01', egcs_fc_narrative_en: 'Prepare the replacement coding correction.'
+    } })
+    await expectOk(replacementResponse, 'Prepare replacement after successful reversal')
+    const replacement = await responseJson<IdRow>(replacementResponse)
+    await expectOk(await page.request.patch(`/api/journal-vouchers/${replacement.id}`, { data: correctedAllocations }), 'Save replacement splits')
+    await completeEntity(page, 'fundingcasejournalvoucher', String(replacement.id), 'Replacement capacity fixture.')
+    const payableCapacity = addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00'))
+    expect(await readCapacity()).toBe(payableCapacity)
+    await expectOk(await page.request.patch(`/api/extensions/streams/${target.streamId}`, { data: {
+      extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: true, config: { enabledPaymentTypes: ['advance'] }
+    } }), 'Select manual reimbursement with generated allocation lines')
+    const createReimbursement = (amount: string) => page.request.post(`/api/agreements/${target.agreementId}/payments`, { data: {
+      egcs_fc_commitmenttype: commitmentType, egcs_fc_fiscalyear: fiscalYearId,
+      egcs_fc_paymenttype: 'reimbursement', egcs_fc_periodstart: 0, egcs_fc_periodend: 2,
+      egcs_fc_paymentamount: amount, egcs_fc_currency: 'cad'
+    } })
+    const overdraw = await createReimbursement(addAutomatedPaymentMoney(payableCapacity, parseAutomatedPaymentMoney('0.01')))
+    expect(overdraw.status(), await overdraw.text()).toBe(400)
+    expect(await overdraw.text()).toContain('GCS_OUTCOME_COST_ALLOCATION_PAYMENT_EXCEEDS_REMAINING')
+    const generatedResponse = await createReimbursement(payableCapacity)
+    await expectOk(generatedResponse, 'Create a Payment using the post-JV capacity')
+    const generatedPayment = await responseJson<IdRow>(generatedResponse)
+    const generatedDetail = await responseJson<PaymentCoverageDetail>(await page.request.get(`/api/agreements/${target.agreementId}/payments/${generatedPayment.id}`))
+    expect(generatedDetail.lines.reduce((total, line) => addAutomatedPaymentMoney(total, parseAutomatedPaymentMoney(line.egcs_fc_amount)), parseAutomatedPaymentMoney('0.00'))).toBe(payableCapacity)
+    expect(await readCapacity()).toBe('0.00')
+    await page.goto(`/en/agreements/${target.agreementId}/payments/${generatedPayment.id}`)
+    await expect(page.getByRole('tab', { name: 'Payment completion', exact: true })).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('post-jv-generated-payment.png'), fullPage: true })
+    await page.goto(`/en/journal-vouchers/${jv.id}`)
+    await expect(page.getByRole('tab', { name: 'Accounting Entry', exact: true })).toBeVisible()
+    await page.getByTestId('journal-voucher-balance-total').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: testInfo.outputPath('shared-capacity-jv.png'), fullPage: true })
 
     await approvalPage.close()
 

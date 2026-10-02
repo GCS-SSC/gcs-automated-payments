@@ -135,7 +135,9 @@ export const calculateAutomatedPaymentAmount = (input: AutomatedPaymentCalculati
   const payments = parseAutomatedPaymentMoney(input.totalPaymentsToDate)
   const forecastLastClaim = parseAutomatedPaymentMoney(input.totalForecastToLastClaimMonth)
   const forecastPeriodEnd = parseAutomatedPaymentMoney(input.totalForecastToPeriodEnd)
-  const commitmentRemaining = parseAutomatedPaymentMoney(input.commitmentRemaining)
+  const commitmentRemaining = typeof input.commitmentRemaining === 'string'
+    ? parseAutomatedPaymentAggregateMoney(input.commitmentRemaining)
+    : parseAutomatedPaymentMoney(input.commitmentRemaining)
   const agreementTotal = parseAutomatedPaymentMoney(input.agreementTotal)
   const finalFiscalYearTotal = parseAutomatedPaymentMoney(input.finalFiscalYearTotal)
   const available = parseAutomatedPaymentMoney(input.availableForDisbursementBeforeHoldback)

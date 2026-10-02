@@ -8,6 +8,8 @@ import {
   savePaymentMetadata
 } from '../../server/calculation-data'
 
+const financials = { getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '60.00' })) }
+
 const calculationDataPath = new URL('../../server/calculation-data.ts', import.meta.url)
 
 const getQuerySource = (source: string, functionName: string, nextFunctionName: string): string => {
@@ -58,8 +60,7 @@ describe('automated payment calculation data', () => {
       getQuerySource(source, 'getSelectedPaymentPeriod', 'getClaimRows'),
       getQuerySource(source, 'getClaimRows', 'getLastClaimPosition'),
       getQuerySource(source, 'getForecastRows', 'getPaymentRows'),
-      getQuerySource(source, 'getPaymentRows', 'getHoldbackReleasedToDate'),
-      getQuerySource(source, 'getCommitmentRemaining', 'getBudgetTotals')
+      getQuerySource(source, 'getPaymentRows', 'getHoldbackReleasedToDate')
     ]
 
     for (const query of queries) {
@@ -151,7 +152,7 @@ describe('automated payment calculation data', () => {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3',
       paymentType: 'advance', periodEnd: 4, excludePaymentId: '21',
       releaseHoldback: true, holdbackReleaseAmount: '3.00' as never
-    }, { enabledPaymentTypes: ['advance'] })
+    }, { enabledPaymentTypes: ['advance'] }, financials)
 
     expect(result.enabled).toBe(true)
     expect(result.currency).toBe('CAD')
@@ -160,22 +161,28 @@ describe('automated payment calculation data', () => {
     ]))
     expect(queries.get('Funding_Case_Agreement_Payment')?.where)
       .toHaveBeenCalledWith('Funding_Case_Agreement_Payment.id', '!=', '21')
-    const commitmentQuery = queries.get('Funding_Case_Agreement_Commitment_Line')
-    expect(commitmentQuery?.innerJoin).toHaveBeenCalledWith(
-      'Agency_Chart_of_Account',
-      'Agency_Chart_of_Account.id',
-      'Transfer_Payment_Stream_Chart_of_Account.egcs_tp_agencychartofaccount'
-    )
-    expect(commitmentQuery?.innerJoin).toHaveBeenCalledWith(
-      'Funding_Case_Agreement_Budget_Fiscal_Year',
-      'Funding_Case_Agreement_Budget_Fiscal_Year.egcs_fc_fiscalyear',
-      'Agency_Chart_of_Account.egcs_ay_fiscalyear'
-    )
-    expect(commitmentQuery?.innerJoin).not.toHaveBeenCalledWith(
-      'Transfer_Payment_Stream_Budget', expect.anything(), expect.anything()
-    )
-    expect(commitmentQuery?.where).toHaveBeenCalledWith('Agency_Chart_of_Account._deleted', '=', false)
-    expect(commitmentQuery?.where).toHaveBeenCalledWith('Transfer_Payment_Stream_Chart_of_Account._deleted', '=', false)
+    expect(financials.getCommitmentPaymentCapacity).toHaveBeenCalledWith({
+      fiscalYearId: '3', commitmentTypeId: '2', excludePaymentId: '21'
+    })
+    expect(result.details.find(detail => detail.label === 'commitmentRemaining')?.value).toBe('60.00')
+    expect(db.selectFrom).not.toHaveBeenCalledWith('Funding_Case_Agreement_Commitment_Line')
+    expect(db.selectFrom).not.toHaveBeenCalledWith('Funding_Case_Agreement_Journal_Voucher_Line')
+  })
+
+  it('preserves an aggregate capacity beyond the persisted row range without duplicating host math', async () => {
+    const { db } = createCalculationDb({
+      Funding_Case_Agreement_Budget_Fiscal_Year: { fiscal_year_order: 2026 },
+      Funding_Case_Agreement_Profile: { egcs_fc_holdback: 0, holdback_basis_type: 'fullagreement' }
+    })
+    const financials = { getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '199999999999999999.98' })) }
+    const result = await calculateAutomatedPaymentFromDb(db as never, {
+      agreementId: '1', commitmentType: '2', fiscalYearId: '3', paymentType: 'advance', periodEnd: 4
+    }, { enabledPaymentTypes: ['advance'] }, financials)
+    expect(result.details.find(detail => detail.label === 'commitmentRemaining')?.value).toBe('199999999999999999.98')
+    financials.getCommitmentPaymentCapacity.mockRejectedValueOnce(new Error('host capacity unavailable'))
+    await expect(calculateAutomatedPaymentFromDb(db as never, {
+      agreementId: '1', commitmentType: '2', fiscalYearId: '3', paymentType: 'advance', periodEnd: 4
+    }, { enabledPaymentTypes: ['advance'] }, financials)).rejects.toThrow('host capacity unavailable')
   })
 
   it('handles no prior claims, payments, or commitment value without optional queries', async () => {
@@ -194,7 +201,7 @@ describe('automated payment calculation data', () => {
     await expect(calculateAutomatedPaymentFromDb(db as never, {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3',
       paymentType: 'reimbursement', periodEnd: 4
-    }, { enabledPaymentTypes: ['reimbursement'] })).resolves.toMatchObject({ enabled: true })
+    }, { enabledPaymentTypes: ['reimbursement'] }, financials)).resolves.toMatchObject({ enabled: true })
     expect(selectFrom).not.toHaveBeenCalledWith('Funding_Case_Agreement_Payment_Line')
     expect(selectFrom).not.toHaveBeenCalledWith('extensions.kv_entry')
   })
@@ -224,7 +231,7 @@ describe('automated payment calculation data', () => {
     await expect(calculateAutomatedPaymentFromDb(db as never, {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3',
       paymentType: 'reimbursement', periodEnd: 4
-    }, { enabledPaymentTypes: ['reimbursement'] })).rejects.toThrow('Database money must be selected as text.')
+    }, { enabledPaymentTypes: ['reimbursement'] }, financials)).rejects.toThrow('Database money must be selected as text.')
     expect(selectFrom).not.toHaveBeenCalledWith('Funding_Case_Agreement_Payment_Line')
     expect(selectFrom).not.toHaveBeenCalledWith('extensions.kv_entry')
   })
@@ -234,7 +241,7 @@ describe('automated payment calculation data', () => {
     await expect(calculateAutomatedPaymentFromDb(db as never, {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3',
       paymentType: 'advance', periodEnd: 4
-    }, { enabledPaymentTypes: ['reimbursement'] })).resolves.toEqual(expect.objectContaining({
+    }, { enabledPaymentTypes: ['reimbursement'] }, financials)).resolves.toEqual(expect.objectContaining({
       enabled: false, ceilingAmount: '0.00', details: []
     }))
     expect(db.selectFrom).not.toHaveBeenCalled()
