@@ -104,14 +104,16 @@ describe('Automated Payments SQL financial-source ledger', () => {
     await sql.raw(sourceLedger).execute(db)
   })
 
-  const service = (recordedPaidAmount = '500.00', capacityAmount = '500.00', options: { cashPaidAmount?: string, jvEffectAmount?: string, correctionAmount?: string, currency?: string } = {}) => {
+  const service = (recordedPaidAmount = '500.00', capacityAmount = '500.00', options: { cashPaidAmount?: string, jvEffectAmount?: string, correctionAmount?: string, accountReceivableRecoveryAmount?:string, claimRecoveries?:Array<{claimLineId:string|null,fiscalYearOrder:string,month:number,currency:string,amount:string}>, currency?: string } = {}) => {
     const cashPaidAmount = options.cashPaidAmount ?? (options.jvEffectAmount === undefined && options.correctionAmount === undefined ? recordedPaidAmount : '500.00')
     return {
-    ledger: { cashPaidAmount, recordedPaidAmount, capacityAmount, jvEffectAmount: options.jvEffectAmount ?? '0.00', correctionAmount: options.correctionAmount ?? '0.00' },
+    ledger: { cashPaidAmount, recordedPaidAmount, capacityAmount, jvEffectAmount: options.jvEffectAmount ?? '0.00', correctionAmount: options.correctionAmount ?? '0.00',
+      accountReceivableRecoveryAmount:options.accountReceivableRecoveryAmount??'0.00',claimRecoveries:options.claimRecoveries??[] },
+    getClaimRecoveryProjection:vi.fn(async()=>({agreementId:'1',entries:options.claimRecoveries??[]})),
     getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount })),
     getRecordedPaidToDate: vi.fn(async () => ({
       agreementId: '1', currency: options.currency ?? 'cad', cashPaidAmount, jvEffectAmount: options.jvEffectAmount ?? '0.00',
-      correctionAmount: options.correctionAmount ?? '0.00', recordedPaidAmount
+      correctionAmount: options.correctionAmount ?? '0.00', accountReceivableRecoveryAmount:options.accountReceivableRecoveryAmount??'0.00', recordedPaidAmount
     }))
     }
   }
@@ -167,6 +169,8 @@ describe('Automated Payments SQL financial-source ledger', () => {
         budgets_by_fy: JSON.stringify(budgets.rows), current_agreement_fiscal_years: JSON.stringify(fiscalYears.rows), reconciliations_by_fy_month: JSON.stringify(reconciliations.rows), forecast_by_fy_month: JSON.stringify(forecasts.rows),
         cash_paid_to_date: financials.ledger.cashPaidAmount, jv_effect_to_date: financials.ledger.jvEffectAmount,
         correction_to_date: financials.ledger.correctionAmount, corrected_recorded_paid_to_date: financials.ledger.recordedPaidAmount,
+        account_receivable_recovery_to_date: financials.ledger.accountReceivableRecoveryAmount,
+        claim_recoveries_by_original_fy_month: JSON.stringify(financials.ledger.claimRecoveries),
         holdback_basis: String(holdback.rows[0]?.basis), holdback_percentage: String(holdback.rows[0]?.percentage),
         holdback_release_requested: options.holdbackReleaseAmount ?? '0.00',
         actual_claims_to_cutoff: actual.totalClaimsToLastClaimMonth, actual_forecast_to_claim: actual.totalForecastToLastClaimMonth,
@@ -345,6 +349,19 @@ describe('Automated Payments SQL financial-source ledger', () => {
     expect(result.availableBeforeHoldback).toBe(scenario.available)
     expect(financials.getRecordedPaidToDate).toHaveBeenCalledExactlyOnceWith({ fiscalYearId: '20', periodEnd: 3, currency: 'cad', excludePaymentId: '99' })
     expect(financials.getCommitmentPaymentCapacity).toHaveBeenCalledExactlyOnceWith({ fiscalYearId: '20', commitmentTypeId: '2', currency: 'cad', excludePaymentId: '99' })
+  })
+
+
+  it('uses a successful ineligible-expense Credit Memo in its original Claim period and separate paid total',async()=>{
+    const financials=service('480.00','520.00',{cashPaidAmount:'500.00',accountReceivableRecoveryAmount:'-20.00',claimRecoveries:[{claimLineId:'1112',fiscalYearOrder:'2026',month:1,currency:'cad',amount:'-20.00'},{claimLineId:'999',fiscalYearOrder:'2026',month:1,currency:'usd',amount:'-999.00'}]})
+    const result=await calculate(financials,{}, {baseAmount:'350.00',ceilingAmount:'350.00',holdbackAmount:'190.00',availableBeforeHoldback:'1060.00'})
+    expect(details(result)).toMatchObject({totalClaimsToLastClaimMonth:'630.00',totalPaymentsToDate:'480.00',commitmentRemaining:'520.00'})
+    expect(financials.getClaimRecoveryProjection).toHaveBeenCalledExactlyOnceWith()
+  })
+  it('keeps approved Claims intact for an outstanding-advance Credit Memo paid recovery',async()=>{
+    const financials=service('480.00','520.00',{cashPaidAmount:'500.00',accountReceivableRecoveryAmount:'-20.00'})
+    const result=await calculate(financials,{}, {baseAmount:'370.00',ceilingAmount:'370.00',holdbackAmount:'190.00',availableBeforeHoldback:'1080.00'})
+    expect(details(result)).toMatchObject({totalClaimsToLastClaimMonth:'650.00',totalPaymentsToDate:'480.00',commitmentRemaining:'520.00'})
   })
 
   it('uses the SDK shared coding-pool threshold exactly, including a one-cent boundary', async () => {

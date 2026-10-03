@@ -184,10 +184,11 @@ const calculationFixture = (scenario: Scenario) => {
     return query
   })
   const service = {
+    getClaimRecoveryProjection:vi.fn(async()=>({agreementId:'1',entries:[]})),
     getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: scenario.capacity })),
     getRecordedPaidToDate: vi.fn(async () => ({
       agreementId: '1', currency: 'cad', cashPaidAmount: scenario.cashPaid,
-      jvEffectAmount: scenario.jvEffect ?? '0.00', correctionAmount: scenario.correction ?? '0.00',
+      jvEffectAmount: scenario.jvEffect ?? '0.00', correctionAmount: scenario.correction ?? '0.00', accountReceivableRecoveryAmount:'0.00',
       recordedPaidAmount: scenario.recordedPaid
     }))
   }

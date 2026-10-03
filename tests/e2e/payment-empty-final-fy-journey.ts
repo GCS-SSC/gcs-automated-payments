@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, type Browser, type Page, type TestInfo } from '@playwright/test'
-import { preparePaymentAuditFixture } from './payment-accuracy-journey'
+import { preparePaymentAuditFixture, selectPaymentAuditPayee } from './payment-accuracy-journey'
 
 type Row = { id: string } & Record<string, unknown>
 type Owner = { agencyId: string; programId: string; streamId: string; agreementId: string }
@@ -11,7 +11,7 @@ type Helpers = {
   complete: (page: Page, entityType: string, id: string, comments: string) => Promise<void>
 }
 const read = async <T = Row>(page: Page, path: string): Promise<T> => {
-  const response = await page.request.get(path)
+  const response = await page.request.get(path, { maxRetries: 2 })
   expect(response.ok(), `${path}: ${response.status()} ${await response.text()}`).toBe(true)
   return await response.json() as T
 }
@@ -92,6 +92,7 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
     await expect(page.getByRole('tab', { name: 'Payments', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: 'Add Payment', exact: true })
+    await selectPaymentAuditPayee(page, dialog, fixture.payee)
     const choose = async (label: RegExp, value: string | RegExp) => {
       const control = dialog.getByRole('combobox', { name: label })
       await control.click()
@@ -112,6 +113,7 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
     const payment = await (await paymentResponse).json() as Row
     expect(payment.egcs_fc_currency).toBe('cad')
     expect(payment.egcs_fc_paymentamount).toBe('1000.05')
+    expect(payment.egcs_fc_applicantrecipient).toBe(fixture.payee.id)
     await post(page, `${agreementBase}/payment-lines`, { egcs_fc_fundingagreementpayment: payment.id,
       egcs_fc_fundingagreementcommitmentline: line.id, egcs_fc_amount: '1000.05' })
     await complete('fundingcasepayment', payment.id)

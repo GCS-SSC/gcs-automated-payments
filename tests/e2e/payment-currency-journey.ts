@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, type Browser, type Page, type TestInfo } from '@playwright/test'
-import { preparePaymentAuditFixture } from './payment-accuracy-journey'
+import { preparePaymentAuditFixture, resolvePaymentAuditPayee, selectPaymentAuditPayee } from './payment-accuracy-journey'
 import { createNativeAgreementThroughUi } from './agreement-native-create'
 
 type Currency = 'cad' | 'usd'
@@ -33,7 +33,7 @@ const positive = (value: bigint) => value > BigInt(0) ? value : BigInt(0)
 const csvCell = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`
 
 const read = async <T = Row>(page: Page, path: string): Promise<T> => {
-  const response = await page.request.get(path)
+  const response = await page.request.get(path, { maxRetries: 2 })
   expect(response.ok(), `${path}: ${response.status()} ${await response.text()}`).toBe(true)
   return await response.json() as T
 }
@@ -124,6 +124,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
   const usdBase = `/api/agreements/${usdAgreement.id}`
   const usdFiscalYear = await post(page, `${usdBase}/budget-fiscal-years`, { egcs_fc_fiscalyear: fiscal.id })
   const owners: Record<Currency, Owner> = { cad: owner, usd: { ...owner, agreementId: usdAgreement.id } }
+  const payees = { cad: fixture.payee, usd: await resolvePaymentAuditPayee(page, usdAgreement.id, fixture.payee.id) }
   const bases: Record<Currency, string> = { cad: agreementBase, usd: usdBase }
   const years: Record<Currency, Row> = { cad: fiscalYear, usd: usdFiscalYear }
   const usdBudgetLine = await post(page, `${usdBase}/budget-line-items`, {
@@ -335,6 +336,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       await tab('Payments', currency)
       await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
       const dialog = page.getByRole('dialog', { name: 'Add Payment', exact: true })
+      await selectPaymentAuditPayee(page, dialog, payees[currency])
       const currencyControl = dialog.getByRole('combobox', { name: /^Currency/ })
       await expect(currencyControl).toBeDisabled()
       await expect(currencyControl).toHaveText(currencyLabel(currency))
@@ -354,8 +356,10 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       const payment = await (await response).json() as Row
       expect(payment.egcs_fc_currency).toBe(currency)
       expect(payment.egcs_fc_paymentamount).toBe(expected)
+      expect(payment.egcs_fc_applicantrecipient).toBe(payees[currency].id)
       if (!raw.some(row => row.boundary === 'agreement-payment-currency-mismatch' && row.agreement_currency === currency)) {
         await reject(currency, 'agreement-payment-currency-mismatch', `${agreementBase}/payments`, {
+          egcs_fc_applicantrecipient: payees[currency].id,
           egcs_fc_commitmenttype: commitmentType, egcs_fc_fiscalyear: years[currency].id,
           egcs_fc_paymenttype: paymentType, egcs_fc_periodstart: 0, egcs_fc_periodend: periodEnd,
           egcs_fc_paymentamount: '0.01', egcs_fc_currency: currency === 'cad' ? 'usd' : 'cad'
@@ -398,8 +402,10 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
         const agreementBase = bases[currency]
         const [original, accepted] = valuesForCurrency
         const claim = await post(page, `${agreementBase}/claims`, { egcs_fc_fiscalyear: years[currency].id,
+          egcs_fc_applicantrecipient: payees[currency].id,
           egcs_fc_periodstart: month, egcs_fc_periodend: month, egcs_fc_isfinalforyear: month === 2,
           egcs_fc_receiveddate: String(fiscal.egcs_ay_startdate).slice(0, 10) })
+        expect(claim.egcs_fc_applicantrecipient).toBe(payees[currency].id)
         const line = await post(page, `${agreementBase}/claim-line-items`, { egcs_fc_fundingagreementclaim: claim.id,
           egcs_fc_fundingagreementbudgetlineitem: currency === 'cad' ? budgetLine.id : usdBudgetLine.id,
           egcs_fc_description: `Native ${currency} Claim month ${month}`, egcs_fc_amount: original,

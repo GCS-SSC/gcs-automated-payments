@@ -1,7 +1,7 @@
 import { expect, test, type APIResponse, type Page } from '@playwright/test'
 import { addAutomatedPaymentMoney, subtractAutomatedPaymentMoney, parseAutomatedPaymentMoney, type AutomatedPaymentCalculationResult } from '../../shared/automated-payments'
 import { deleteUnsubmittedCommitmentDrafts, postNegativeCorrection } from './correction-fixture'
-import { createPaymentLifecycleAuditRecorder, runPaymentAccuracyJourney, shiftPaymentAuditMoney } from './payment-accuracy-journey'
+import { createPaymentLifecycleAuditRecorder, resolvePaymentAuditPayee, runPaymentAccuracyJourney, selectPaymentAuditPayee, shiftPaymentAuditMoney } from './payment-accuracy-journey'
 import { runPaymentCurrencyJourney } from './payment-currency-journey'
 import { runPaymentEmptyFinalFiscalYearJourney } from './payment-empty-final-fy-journey'
 
@@ -432,6 +432,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     const agreementResponse = await page.request.get(`/api/agreements/${target.agreementId}`)
     await expectOk(agreementResponse, 'Resolve automated-payment stream program')
     const agreement = await responseJson<{ program_id: string }>(agreementResponse)
+    const payee = await resolvePaymentAuditPayee(page, target.agreementId)
 
     const statusesResponse = await page.request.get('/api/statuses')
     await expectOk(statusesResponse, 'Resolve draft payment status')
@@ -735,6 +736,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     const existingPaymentIds = new Set(paymentsBeforeUiCreate.payments.map(payment => String(payment.id)))
 
     const aboveCeiling = await page.request.post(`/api/agreements/${target.agreementId}/payments`, { data: {
+      egcs_fc_applicantrecipient: payee.id,
       egcs_fc_commitmenttype: commitmentType,
       egcs_fc_fiscalyear: fiscalYearId,
       egcs_fc_paymenttype: 'advance',
@@ -757,6 +759,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await openAgreementPaymentsTab(page, target.agreementId)
     await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
     const paymentDialog = page.getByRole('dialog', { name: 'Add Payment' })
+    await selectPaymentAuditPayee(page, paymentDialog, payee)
     await paymentDialog.getByRole('combobox', { name: /^Commitment type/ }).click()
     await page.getByRole('option', { name: /Commitment/ }).first().click()
     await paymentDialog.getByRole('combobox', { name: /^Fiscal year/ }).click()
@@ -933,6 +936,7 @@ test.describe.serial('Automated payment lifecycle', () => {
       extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: true, config: { enabledPaymentTypes: ['advance'] }
     } }), 'Select manual reimbursement with generated allocation lines')
     const createReimbursement = (amount: string) => page.request.post(`/api/agreements/${target.agreementId}/payments`, { data: {
+      egcs_fc_applicantrecipient: payee.id,
       egcs_fc_commitmenttype: commitmentType, egcs_fc_fiscalyear: fiscalYearId,
       egcs_fc_paymenttype: 'reimbursement', egcs_fc_periodstart: 0, egcs_fc_periodend: 2,
       egcs_fc_paymentamount: amount, egcs_fc_currency: 'cad'

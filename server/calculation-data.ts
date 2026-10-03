@@ -397,7 +397,7 @@ export const calculateAutomatedPaymentFromDb = async (
   db: Db,
   input: AutomatedPaymentServerInput,
   streamConfig: unknown,
-  agreementFinancials: Pick<GcsExtensionAgreementFinancials, 'getCommitmentPaymentCapacity' | 'getRecordedPaidToDate'>
+  agreementFinancials: Pick<GcsExtensionAgreementFinancials, 'getCommitmentPaymentCapacity' | 'getRecordedPaidToDate' | 'getClaimRecoveryProjection'>
 ): Promise<AutomatedPaymentServerCalculation> => {
   const currency = AutomatedPaymentCurrencySchema.parse(input.currency)
   const config = parseAutomatedPaymentsStreamConfig(streamConfig)
@@ -424,7 +424,10 @@ export const calculateAutomatedPaymentFromDb = async (
     budgetTotals,
     recordedPaid
   ] = await Promise.all([
-    getClaimRows(db, input.agreementId, currency),
+    Promise.all([getClaimRows(db, input.agreementId, currency), agreementFinancials.getClaimRecoveryProjection()])
+      .then(([original, recoveries]) => [...original, ...recoveries.entries.filter(row => row.currency === currency).map(row => ({
+        amount: parseDatabaseAggregateMoney(row.amount), month: row.month, fiscalYearOrder: Number(row.fiscalYearOrder)
+      }))]),
     getForecastRows(db, input.agreementId, currency),
     agreementFinancials.getCommitmentPaymentCapacity({
       fiscalYearId: input.fiscalYearId,

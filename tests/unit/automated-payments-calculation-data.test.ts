@@ -8,9 +8,9 @@ import {
   savePaymentMetadata
 } from '../../server/calculation-data'
 
-const recordedPaid = (amount = '0.00') => ({ agreementId: '1', cashPaidAmount: amount, jvEffectAmount: '0.00', correctionAmount: '0.00', recordedPaidAmount: amount, currency: 'cad' })
+const recordedPaid = (amount = '0.00') => ({ agreementId: '1', cashPaidAmount: amount, jvEffectAmount: '0.00', correctionAmount: '0.00', accountReceivableRecoveryAmount: '0.00', recordedPaidAmount: amount, currency: 'cad' })
 const financials = { getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '60.00' })),
-  getRecordedPaidToDate: vi.fn(async () => recordedPaid()) }
+  getRecordedPaidToDate: vi.fn(async () => recordedPaid()), getClaimRecoveryProjection: vi.fn(async () => ({agreementId:'1',entries:[]})) }
 
 const calculationDataPath = new URL('../../server/calculation-data.ts', import.meta.url)
 
@@ -179,7 +179,7 @@ describe('automated payment calculation data', () => {
       Funding_Case_Agreement_Profile: { egcs_fc_holdback: 0, egcs_fc_currency: 'cad', holdback_basis_type: 'fullagreement' }
     })
     const financials = { getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '199999999999999999.98' })),
-      getRecordedPaidToDate: vi.fn(async () => recordedPaid()) }
+      getRecordedPaidToDate: vi.fn(async () => recordedPaid()), getClaimRecoveryProjection: vi.fn(async () => ({agreementId:'1',entries:[]})) }
     const result = await calculateAutomatedPaymentFromDb(db as never, {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3', paymentType: 'advance', periodEnd: 4
     }, { enabledPaymentTypes: ['advance'] }, financials)
@@ -262,6 +262,49 @@ describe('automated payment calculation data', () => {
     }, { enabledPaymentTypes: ['reimbursement'] }, service)).rejects.toThrow('corrected accounting unavailable')
   })
 
+
+  it('applies successful Credit Memo reductions to the original Claim period and recorded paid independently', async () => {
+    const {db,selectFrom} = createCalculationDb({
+      Funding_Case_Agreement_Budget_Fiscal_Year:{fiscal_year_order:2026},
+      Funding_Case_Agreement_Claim_Reconcile_Line_Item:[{amount:'100.00',month:1,fiscal_year_order:2026}],
+      Funding_Case_Agreement_Budget_Line_Item:[{amount:'200.00',fiscal_year_order:2026}],
+      Funding_Case_Agreement_Profile:{egcs_fc_holdback:0,egcs_fc_currency:'cad',holdback_basis_type:'fullagreement'}
+    })
+    const service = {
+      getCommitmentPaymentCapacity:vi.fn(async()=>({agreementId:'1',capacityAmount:'40.00'})),
+      getRecordedPaidToDate:vi.fn(async()=>({...recordedPaid('80.00'),accountReceivableRecoveryAmount:'-20.00',recordedPaidAmount:'60.00'})),
+      getClaimRecoveryProjection:vi.fn(async()=>({agreementId:'1',entries:[
+        {claimLineId:'10',fiscalYearOrder:'2026',month:1,currency:'cad',amount:'-20.00'},
+        {claimLineId:'11',fiscalYearOrder:'2026',month:1,currency:'usd',amount:'-999.00'},
+        {claimLineId:'12',fiscalYearOrder:'2027',month:1,currency:'cad',amount:'-10.00'}
+      ]}))
+    }
+    const result=await calculateAutomatedPaymentFromDb(db as never,{agreementId:'1',commitmentType:'2',fiscalYearId:'3',paymentType:'reimbursement',periodEnd:3,excludePaymentId:'99'}, {enabledPaymentTypes:['reimbursement']},service)
+    const details=Object.fromEntries(result.details.map(detail=>[detail.label,detail.value]))
+    expect(result.baseAmount).toBe('20.00')
+    expect(details.totalClaimsToLastClaimMonth).toBe('80.00')
+    expect(details.totalPaymentsToDate).toBe('60.00')
+    expect(details.commitmentRemaining).toBe('40.00')
+    expect(service.getClaimRecoveryProjection).toHaveBeenCalledExactlyOnceWith()
+    expect(service.getRecordedPaidToDate).toHaveBeenCalledExactlyOnceWith({fiscalYearId:'3',periodEnd:3,currency:'cad',excludePaymentId:'99'})
+    expect(selectFrom).not.toHaveBeenCalledWith('Funding_Case_Account_Receivable_Posting')
+    expect(selectFrom).not.toHaveBeenCalledWith('Funding_Case_Account_Receivable_Allocation')
+  })
+  it('leaves Claims unchanged for an outstanding-advance Credit Memo while consuming reduced paid', async () => {
+    const {db}=createCalculationDb({Funding_Case_Agreement_Budget_Fiscal_Year:{fiscal_year_order:2026},Funding_Case_Agreement_Claim_Reconcile_Line_Item:[{amount:'100.00',month:1,fiscal_year_order:2026}],Funding_Case_Agreement_Profile:{egcs_fc_holdback:0,egcs_fc_currency:'cad',holdback_basis_type:'fullagreement'}})
+    const service={...financials,getRecordedPaidToDate:vi.fn(async()=>({...recordedPaid('80.00'),accountReceivableRecoveryAmount:'-20.00',recordedPaidAmount:'60.00'}))}
+    const result=await calculateAutomatedPaymentFromDb(db as never,{agreementId:'1',commitmentType:'2',fiscalYearId:'3',paymentType:'reimbursement',periodEnd:3},{enabledPaymentTypes:['reimbursement']},service)
+    const details=Object.fromEntries(result.details.map(detail=>[detail.label,detail.value]))
+    expect(details.totalClaimsToLastClaimMonth).toBe('100.00')
+    expect(details.totalPaymentsToDate).toBe('60.00')
+    expect(result.baseAmount).toBe('40.00')
+  })
+  it('fails closed when the SDK Claim recovery projection cannot be read', async () => {
+    const {db}=createCalculationDb({Funding_Case_Agreement_Budget_Fiscal_Year:{fiscal_year_order:2026},Funding_Case_Agreement_Profile:{egcs_fc_holdback:0,egcs_fc_currency:'cad',holdback_basis_type:'fullagreement'}})
+    const service={...financials,getClaimRecoveryProjection:vi.fn(async()=>{throw new Error('AR Claim projection unavailable')})}
+    await expect(calculateAutomatedPaymentFromDb(db as never,{agreementId:'1',commitmentType:'2',fiscalYearId:'3',paymentType:'reimbursement',periodEnd:3},{enabledPaymentTypes:['reimbursement']},service)).rejects.toThrow('AR Claim projection unavailable')
+  })
+
   it('returns a disabled result before any database access', async () => {
     const db = { selectFrom: vi.fn() }
     await expect(calculateAutomatedPaymentFromDb(db as never, {
@@ -310,7 +353,7 @@ describe('automated payment calculation data', () => {
     const { db } = createCalculationDb({ Funding_Case_Agreement_Profile: {
       egcs_fc_holdback: 10, holdback_basis_type: 'fullagreement', egcs_fc_currency: currency
     } })
-    const services = { getCommitmentPaymentCapacity: vi.fn(), getRecordedPaidToDate: vi.fn() }
+    const services = { getCommitmentPaymentCapacity: vi.fn(), getRecordedPaidToDate: vi.fn(), getClaimRecoveryProjection: vi.fn() }
     await expect(calculateAutomatedPaymentFromDb(db as never, {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3', currency: 'cad', paymentType: 'advance', periodEnd: 0
     }, {}, services)).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_INVALID' })
@@ -322,7 +365,7 @@ describe('automated payment calculation data', () => {
     const { db, queries } = createCalculationDb({ Funding_Case_Agreement_Profile: {
       egcs_fc_holdback: 10, holdback_basis_type: 'fullagreement', egcs_fc_currency: 'cad'
     } })
-    const services = { getCommitmentPaymentCapacity: vi.fn(), getRecordedPaidToDate: vi.fn() }
+    const services = { getCommitmentPaymentCapacity: vi.fn(), getRecordedPaidToDate: vi.fn(), getClaimRecoveryProjection: vi.fn() }
     await expect(calculateAutomatedPaymentFromDb(db as never, {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3', currency: 'usd', paymentType: 'advance', periodEnd: 0
     }, {}, services)).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH' })
@@ -340,7 +383,7 @@ describe('automated payment calculation data', () => {
       Funding_Case_Agreement_Budget_Line_Item: [{ amount: '125.55', fiscal_year_order: 2026 }, { amount: '84.46', fiscal_year_order: 2027 }],
       Funding_Case_Agreement_Profile: { egcs_fc_holdback: 10, egcs_fc_currency: 'usd', holdback_basis_type: 'fullagreement' }
     })
-    const service = { getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '75.01' })),
+    const service = { getClaimRecoveryProjection: vi.fn(async () => ({agreementId:'1',entries:[]})), getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '75.01' })),
       getRecordedPaidToDate: vi.fn(async () => ({ ...recordedPaid('20.02'), currency: 'usd' })) }
     const result = await calculateAutomatedPaymentFromDb(db as never, {
       agreementId: '1', commitmentType: '2', fiscalYearId: '3', currency: 'usd', paymentType: 'advance', periodEnd: 3
@@ -361,7 +404,7 @@ describe('automated payment calculation data', () => {
       Funding_Case_Agreement_Budget_Line_Item: [{ amount: '100.00', fiscal_year_order: 2026 }],
       Funding_Case_Agreement_Profile: { egcs_fc_holdback: 10, egcs_fc_currency: 'usd', holdback_basis_type: 'fullagreement' }
     })
-    const service = { getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '100.00' })),
+    const service = { getClaimRecoveryProjection: vi.fn(async () => ({agreementId:'1',entries:[]})), getCommitmentPaymentCapacity: vi.fn(async () => ({ agreementId: '1', capacityAmount: '100.00' })),
       getRecordedPaidToDate: vi.fn(async () => ({ ...recordedPaid(), currency: null as string | null })) }
     const input = { agreementId: '1', commitmentType: '2', fiscalYearId: '3', currency: 'usd', paymentType: 'advance' as const, periodEnd: 0 }
     await expect(calculateAutomatedPaymentFromDb(db as never, input, {}, service)).resolves.toMatchObject({ currency: 'USD', ceilingAmount: '90.00' })

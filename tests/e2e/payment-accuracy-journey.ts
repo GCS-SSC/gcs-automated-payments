@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { expect, type Browser, type Page, type TestInfo } from '@playwright/test'
+import { expect, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test'
 
 type Owner = { agencyId: string; agreementId: string; programId: string; streamId: string }
 type Id = { id: string }
@@ -31,7 +31,7 @@ const min = (...values: bigint[]) => values.reduce((a, b) => a < b ? a : b)
 const csvCell = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`
 
 const read = async <T>(page: Page, url: string): Promise<T> => {
-  const response = await page.request.get(url)
+  const response = await page.request.get(url, { maxRetries: 2 })
   expect(response.ok(), `${url}: ${response.status()} ${await response.text()}`).toBe(true)
   return await response.json() as T
 }
@@ -42,6 +42,27 @@ const post = async <T extends Id = Row>(page: Page, url: string, data: Record<st
 }
 const items = async (page: Page, url: string) => (await read<{ items: Row[] }>(page, `${url}${url.includes('?') ? '&' : '?'}limit=100`)).items
 
+type PaymentAuditPayee = { id: string; label_en: string }
+
+/** Resolves the explicit payee from active Proponents linked to this Agreement. */
+export const resolvePaymentAuditPayee = async (page: Page, agreementId: string, applicantRecipientId?: string) => {
+  const { items: payees } = await read<{ items: PaymentAuditPayee[] }>(page,
+    `/api/agreements/${agreementId}/payments/lookups/proponents?limit=100`)
+  const payee = applicantRecipientId === undefined ? payees[0] : payees.find(row => String(row.id) === applicantRecipientId)
+  expect(payee, 'An active explicitly selected Agreement Proponent').toBeTruthy()
+  return { ...payee!, id: String(payee!.id) }
+}
+
+/** Selects the required payee through the rendered accessible Payment control. */
+export const selectPaymentAuditPayee = async (page: Page, dialog: Locator, payee: PaymentAuditPayee) => {
+  const control = dialog.getByRole('combobox', { name: /^Proponent payee/ })
+  await expect(control).toHaveAttribute('aria-required', 'true')
+  await control.click()
+  await page.getByRole('option', { name: payee.label_en, exact: true }).click()
+  await expect(page.locator('[role="listbox"]')).toHaveCount(0)
+  await expect(control).toHaveText(payee.label_en)
+}
+
 export const shiftPaymentAuditMoney = (value: string, adjustment: string) => money(cents(value) + cents(adjustment))
 
 /** Captures public source evidence for each independently asserted JV/Correction checkpoint. */
@@ -50,7 +71,7 @@ export const createPaymentLifecycleAuditRecorder = (page: Page, testInfo: TestIn
   const snapshots: Array<Record<string, unknown>> = []
   const base = `/api/agreements/${owner.agreementId}`
   const snapshot = async (url: string): Promise<Record<string, unknown>> => {
-    const response = await page.request.get(url)
+    const response = await page.request.get(url, { maxRetries: 2 })
     if (response.status() === 403) return { access_status: 403, response: await response.json() }
     expect(response.ok(), `${url}: ${response.status()} ${await response.text()}`).toBe(true)
     return await response.json() as Record<string, unknown>
@@ -238,13 +259,14 @@ export const preparePaymentAuditFixture = async (
     egcs_fc_totalamount: '1000.05', egcs_fc_programfunding: '1000.05', egcs_fc_fundingsources: [], egcs_fc_currency: 'cad'
   })
   const updatedProgramBudget = await read<Row>(page, `/api/transfer-payments/${owner.programId}/budgets/${programBudget.id}`)
-  return { owner, agreementBase, fiscalYear, fiscal, budgetLine, category, linkedChart, sourceBudget, sourceRows, streamBase, authoredStreamBudget, updatedProgramBudget, agreementInput, authoredFinalBasis }
+  const payee = await resolvePaymentAuditPayee(page, owner.agreementId, String(recipient.id))
+  return { owner, agreementBase, fiscalYear, fiscal, budgetLine, category, linkedChart, sourceBudget, sourceRows, streamBase, authoredStreamBudget, updatedProgramBudget, agreementInput, authoredFinalBasis, payee }
 }
 
 export const runPaymentAccuracyJourney = async (
   page: Page, browser: Browser, testInfo: TestInfo, source: Owner, helpers: Helpers
 ) => {
-  const { owner, agreementBase, fiscalYear, fiscal, budgetLine, linkedChart } = await preparePaymentAuditFixture(page, source)
+  const { owner, agreementBase, fiscalYear, fiscal, budgetLine, linkedChart, payee } = await preparePaymentAuditFixture(page, source)
   const commitmentType = (await items(page, `${agreementBase}/commitments/lookups/types`))[0]!
   const commitment = await post(page, `${agreementBase}/commitments`, { egcs_fc_type: commitmentType.id, egcs_fc_currency: 'cad' })
   const commitmentLine = await post(page, `${agreementBase}/commitment-lines`, {
@@ -349,7 +371,8 @@ export const runPaymentAccuracyJourney = async (
     expect(actual.details.find(detail => detail.label === 'commitmentRemaining')!.value).toBe(money(capacity))
     const prior = (await read<{ payments: Id[] }>(page, `${agreementBase}/payments-overview`)).payments.map(row => row.id)
     const rejected = await page.request.post(`${agreementBase}/payments`, { data: {
-      ...body, egcs_fc_paymentamount: money(cents(expected) + BigInt(1)), egcs_fc_currency: 'cad'
+      ...body, egcs_fc_applicantrecipient: payee.id,
+      egcs_fc_paymentamount: money(cents(expected) + BigInt(1)), egcs_fc_currency: 'cad'
     } })
     expect(rejected.status(), await rejected.text()).toBe(400)
     expect(await rejected.text()).toContain('GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING')
@@ -365,6 +388,7 @@ export const runPaymentAccuracyJourney = async (
     await expect(page.getByRole('tab', { name: 'Payments', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: 'Add Payment', exact: true })
+    await selectPaymentAuditPayee(page, dialog, payee)
     const choose = async (label: RegExp, option: string | RegExp) => {
       const control = dialog.getByRole('combobox', { name: label })
       await control.click()
@@ -393,6 +417,7 @@ export const runPaymentAccuracyJourney = async (
     expect(created).toBeTruthy()
     const detail = await read<Row>(page, `${agreementBase}/payments/${created.id}`)
     expect(detail.egcs_fc_paymentamount).toBe(requested)
+    expect(detail.egcs_fc_applicantrecipient).toBe(payee.id)
     await post(page, `${agreementBase}/payment-lines`, {
       egcs_fc_fundingagreementpayment: created.id, egcs_fc_fundingagreementcommitmentline: commitmentLine.id, egcs_fc_amount: requested
     })
@@ -410,9 +435,11 @@ export const runPaymentAccuracyJourney = async (
   }
   const reconcile = async (month: number, submitted: string, reconciled: string) => {
     const claim = await post(page, `${agreementBase}/claims`, {
+      egcs_fc_applicantrecipient: payee.id,
       egcs_fc_fiscalyear: fiscalYear.id, egcs_fc_isfinalforyear: month === 2,
       egcs_fc_periodstart: month, egcs_fc_periodend: month, egcs_fc_receiveddate: String(fiscal.egcs_ay_startdate).slice(0, 10)
     })
+    expect(claim.egcs_fc_applicantrecipient).toBe(payee.id)
     const claimLine = await post(page, `${agreementBase}/claim-line-items`, {
       egcs_fc_fundingagreementclaim: claim.id, egcs_fc_fundingagreementbudgetlineitem: budgetLine.id,
       egcs_fc_description: `Claim period ${month}`, egcs_fc_amount: submitted, egcs_fc_totalamount: submitted, egcs_fc_currency: 'cad'
