@@ -1,9 +1,8 @@
 <script setup lang="ts">
-
 import { messages } from '../i18n/messages'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { Ref } from 'vue'
-import { type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
+import type { GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
 import type { GcsPaymentAmountCalculatorResult } from '@gcs-ssc/extensions/ui'
 import {
   ExtensionAccordion,
@@ -57,7 +56,9 @@ const selectedCurrency = computed(() => {
   return parsed.success ? parsed.data : null
 })
 let calculationSequence = 0
-onBeforeUnmount(() => { calculationSequence += 1 })
+onBeforeUnmount(() => {
+  calculationSequence += 1
+})
 
 const calculationDetailLabelKeys: Record<string, keyof typeof messages.en> = {
   baseAmount: 'details.base_amount',
@@ -79,6 +80,11 @@ const calculationDetailItems = computed(() => [{
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 
+/**
+ * Returns the first nonempty display message from an API response.
+ * @param values Candidate response messages.
+ * @returns The first message or null.
+ */
 const firstString = (...values: unknown[]): string | null => {
   for (const value of values) {
     if (typeof value === 'string' && value.length > 0) {
@@ -89,6 +95,11 @@ const firstString = (...values: unknown[]): string | null => {
   return null
 }
 
+/**
+ * Preserves the server-localized field message before broader error text.
+ * @param payload Parsed response data.
+ * @returns A display message or null.
+ */
 const resolveApiErrorMessage = (payload: unknown): string | null => {
   if (!isRecord(payload)) {
     return null
@@ -108,6 +119,11 @@ const resolveApiErrorMessage = (payload: unknown): string | null => {
   return firstString(data.message, payload.message, payload.statusMessage)
 }
 
+/**
+ * Reads a response error without depending on the host message catalog.
+ * @param response Failed calculation response.
+ * @returns Localized error text.
+ */
 const readErrorMessage = async (response: Response): Promise<string> => {
   try {
     const payload = await response.json()
@@ -122,6 +138,11 @@ const readErrorMessage = async (response: Response): Promise<string> => {
   return response.statusText || t('calculation_error')
 }
 
+/**
+ * Formats exact money in the selected currency without numeric conversion.
+ * @param value Canonical money.
+ * @returns The localized amount and currency.
+ */
 const formatMoney = (value: AutomatedPaymentMoney) => {
   const [integer = '0', fraction = '00'] = value.split('.')
   const negative = integer.startsWith('-')
@@ -154,7 +175,6 @@ const requestBody = computed(() => ({
   egcs_fc_currency: selectedCurrency.value,
   egcs_fc_periodstart: model.periodStart,
   egcs_fc_periodend: model.periodEnd,
-  egcs_fc_paymentamount: model.amount,
   extensions: {
     [EXTENSION_KEY]: {
       releaseHoldback: releaseHoldback.value,
@@ -162,6 +182,12 @@ const requestBody = computed(() => ({
     }
   }
 }))
+
+// Holdback elections belong to this Agreement, never to the next route owner.
+watch(() => context.agreementId, () => {
+  releaseHoldback.value = false
+  holdbackReleaseAmount.value = ''
+}, { flush: 'sync' })
 
 const hasRequiredInputs = computed(() =>
   typeof requestBody.value.egcs_fc_commitmenttype === 'string'
@@ -174,6 +200,7 @@ const hasRequiredInputs = computed(() =>
   && typeof requestBody.value.egcs_fc_periodend === 'number'
 )
 
+/** Publishes calculation state through the public host calculator contract. */
 const publishResult = () => {
   const result: GcsPaymentAmountCalculatorResult = {
     ceilingAmount: calculation.value?.ceilingAmount,
@@ -231,7 +258,9 @@ const calculate = async () => {
   }
 }
 
-watch([requestBody, endpoint], calculate, { deep: true, immediate: true })
+// The host replaces its model object while typing. Compare only ceiling inputs,
+// so transient amount text never interrupts editing or resets the suggestion.
+watch([() => JSON.stringify(requestBody.value), endpoint], calculate, { immediate: true })
 </script>
 
 <template>

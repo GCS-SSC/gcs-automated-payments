@@ -313,6 +313,52 @@ describe('automated payment amount calculator', () => {
     expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', suggestedAmount: '10.01' })
   })
 
+  it('keeps the calculated ceiling independent of each edit to the actual payment amount', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({
+      ceilingAmount: '10.00', suggestedAmount: '10.00', currency: 'CAD', details: []
+    }) }))
+    vi.stubGlobal('fetch', fetchMock)
+    const model = { commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'cad', amount: '10.00' }
+    const wrapper = mountCalculator(model)
+    await flushPromises()
+    const publishedCount = wrapper.emitted('result')!.length
+    for (const amount of ['', '5', '5.', '5.01', '0', '10.00', '10.01', '0.001']) {
+      await wrapper.setProps({ model: { ...model, amount } })
+      await flushPromises()
+      expect(wrapper.emitted('result')).toHaveLength(publishedCount)
+    }
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const request = JSON.parse(String((fetchMock.mock.calls[0] as unknown[])[1] && ((fetchMock.mock.calls[0] as unknown[])[1] as RequestInit).body))
+    expect(request).not.toHaveProperty('egcs_fc_paymentamount')
+    expect(wrapper.emitted('result')!.at(-1)![0]).toMatchObject({ ceilingAmount: '10.00', error: null, loading: false })
+  })
+
+  it('resets the holdback election and ignores stale financial evidence when the Agreement changes', async () => {
+    let resolveOld!: (value: unknown) => void
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ceilingAmount: '10.00', suggestedAmount: '10.00', currency: 'CAD', details: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ceilingAmount: '10.00', suggestedAmount: '10.00', currency: 'CAD', details: [] }) })
+      .mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve }))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ceilingAmount: '20.00', suggestedAmount: '20.00', currency: 'CAD', details: [] }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const wrapper = mountCalculator({ commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'cad' })
+    await flushPromises()
+    await wrapper.get('[data-test="release-holdback"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="holdback-amount"]').setValue('4.25')
+    await flushPromises()
+    await wrapper.setProps({ context: { agreementId: 'agreement-52' } })
+    await flushPromises()
+    expect(wrapper.find('[data-test="holdback-amount"]').exists()).toBe(false)
+    expect(wrapper.emitted('extensionPayload')!.at(-1)![0]).toEqual({ releaseHoldback: false, holdbackReleaseAmount: '0.00' })
+    const request = JSON.parse(String((fetchMock.mock.calls[3] as unknown[])[1] && ((fetchMock.mock.calls[3] as unknown[])[1] as RequestInit).body))
+    expect(fetchMock.mock.calls[3]![0]).toContain('/agreements/agreement-52/calculate-payment')
+    expect(request.extensions['gcs-automated-payments']).toEqual({ releaseHoldback: false, holdbackReleaseAmount: '0.00' })
+    resolveOld({ ok: true, json: async () => ({ ceilingAmount: '99.00', suggestedAmount: '99.00', currency: 'CAD', details: [] }) })
+    await flushPromises()
+    expect(wrapper.emitted('result')!.at(-1)![0]).toMatchObject({ ceilingAmount: '20.00', loading: false, error: null })
+  })
+
   it.each(['success', 'failure'])('ignores a stale CAD %s after the USD response', async outcome => {
     let resolveCad!: (value: unknown) => void
     let rejectCad!: (error: Error) => void

@@ -1,7 +1,7 @@
 import { expect, test, type APIResponse, type Page } from '@playwright/test'
 import { addAutomatedPaymentMoney, subtractAutomatedPaymentMoney, parseAutomatedPaymentMoney, type AutomatedPaymentCalculationResult } from '../../shared/automated-payments'
 import { deleteUnsubmittedCommitmentDrafts, postNegativeCorrection } from './correction-fixture'
-import { createPaymentLifecycleAuditRecorder, resolvePaymentAuditPayee, runPaymentAccuracyJourney, selectPaymentAuditPayee, shiftPaymentAuditMoney } from './payment-accuracy-journey'
+import { createPaymentAuditRecipient, createPaymentLifecycleAuditRecorder, resolvePaymentAuditPayee, runPaymentAccuracyJourney, selectPaymentAuditPayee, shiftPaymentAuditMoney } from './payment-accuracy-journey'
 import { runPaymentCurrencyJourney } from './payment-currency-journey'
 import { runPaymentEmptyFinalFiscalYearJourney } from './payment-empty-final-fy-journey'
 
@@ -432,7 +432,18 @@ test.describe.serial('Automated payment lifecycle', () => {
     const agreementResponse = await page.request.get(`/api/agreements/${target.agreementId}`)
     await expectOk(agreementResponse, 'Resolve automated-payment stream program')
     const agreement = await responseJson<{ program_id: string }>(agreementResponse)
-    const payee = await resolvePaymentAuditPayee(page, target.agreementId)
+    const recipient = await createPaymentAuditRecipient(page, target.agencyId)
+    const proponentTypesResponse = await page.request.get(
+      `/api/agreements/lookups/proponent-types?stream_id=${target.streamId}&proponent_id=${recipient.id}`
+    )
+    await expectOk(proponentTypesResponse, 'Resolve isolated payee types')
+    const proponentTypes = await responseJson<{ items: IdRow[] }>(proponentTypesResponse)
+    expect(proponentTypes.items.length).toBeGreaterThan(0)
+    await expectOk(await page.request.post(`/api/agreements/${target.agreementId}/applicant-recipients`, { data: {
+      egcs_fc_applicantrecipient: recipient.id,
+      egcs_fc_applicantrecipientsubtype: String(proponentTypes.items[0]!.id)
+    } }), 'Link isolated payment payee')
+    const payee = await resolvePaymentAuditPayee(page, target.agreementId, String(recipient.id))
 
     const statusesResponse = await page.request.get('/api/statuses')
     await expectOk(statusesResponse, 'Resolve draft payment status')

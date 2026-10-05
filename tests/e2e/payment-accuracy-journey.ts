@@ -44,6 +44,26 @@ const items = async (page: Page, url: string) => (await read<{ items: Row[] }>(p
 
 type PaymentAuditPayee = { id: string; label_en: string }
 
+/** Creates a debt-free fixture Proponent through public APIs, independent of seeded AR balances. */
+export const createPaymentAuditRecipient = async (page: Page, agencyId: string) => {
+  const token = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const recipient = await post(page, '/api/applicant-recipients', {
+    egcs_ar_leadagency: agencyId,
+    egcs_ar_legalname_en: `Payment audit ${token}`,
+    egcs_ar_legalname_fr: `Vérification de paiement ${token}`,
+    egcs_ar_operatingname_en: `Payment audit ${token}`,
+    egcs_ar_operatingname_fr: `Vérification de paiement ${token}`,
+    egcs_ar_description_en: 'Isolated payment calculation fixture.',
+    egcs_ar_description_fr: 'Données isolées pour vérifier les calculs de paiement.',
+    egcs_ar_active: true
+  })
+  await post(page, `/api/applicant-recipients/${recipient.id}/agency-financial-ids`, {
+    egcs_ar_agency: agencyId,
+    egcs_ar_financialsystemid: String(BigInt(9000000) + BigInt(recipient.id))
+  })
+  return recipient
+}
+
 /** Resolves the explicit payee from active Proponents linked to this Agreement. */
 export const resolvePaymentAuditPayee = async (page: Page, agreementId: string, applicantRecipientId?: string) => {
   const { items: payees } = await read<{ items: PaymentAuditPayee[] }>(page,
@@ -227,16 +247,9 @@ export const preparePaymentAuditFixture = async (
     await post(page, `/api/agency/${owner.agencyId}/workflows/${workflow.id}/publish`, {})
     await post(page, `${streamBase}/workflows`, { egcs_tp_workflow: workflow.id })
   }
-  let selectedProponent: { recipient: Row; types: Row[] } | undefined
-  for (const recipient of await items(page, '/api/agreements/lookups/applicant-recipients')) {
-    const types = await items(page, `/api/agreements/lookups/proponent-types?stream_id=${owner.streamId}&proponent_id=${recipient.id}`)
-    if (types.length > 0) {
-      selectedProponent = { recipient, types }
-      break
-    }
-  }
-  expect(selectedProponent, 'A recipient compatible with the authored stream subtype').toBeTruthy()
-  const { recipient, types: proponentTypes } = selectedProponent!
+  const recipient = await createPaymentAuditRecipient(page, owner.agencyId)
+  const proponentTypes = await items(page, `/api/agreements/lookups/proponent-types?stream_id=${owner.streamId}&proponent_id=${recipient.id}`)
+  expect(proponentTypes.length, 'A recipient compatible with the authored stream subtype').toBeGreaterThan(0)
   const agreementInput = {
     egcs_fc_agreementnumber: `MATH-${token.slice(-10)}`, egcs_fc_transferpaymentstream: owner.streamId,
     egcs_fc_currency: 'cad',
@@ -409,7 +422,24 @@ export const runPaymentAccuracyJourney = async (
     const amount = dialog.getByRole('textbox', { name: /^Amount/ })
     const renderedAmount = async () => (await amount.inputValue()).replace(/[^\d.-]/g, '')
     await expect.poll(renderedAmount).toBe(expected)
-    if (override !== undefined) await amount.fill(override)
+    await expect(amount).toHaveAttribute('required')
+    await expect(amount).toHaveAttribute('aria-required', 'true')
+    if (override !== undefined) {
+      await amount.fill('')
+      const election = dialog.getByRole('checkbox')
+      const initialElection = await election.isChecked()
+      // A genuine ceiling recalculation must not replace an explicitly cleared amount.
+      for (const nextElection of [!initialElection, initialElection]) {
+        const recalculated = page.waitForResponse(response => response.url().includes('/calculate-payment')
+          && response.request().method() === 'POST'
+          && response.request().postDataJSON()?.extensions?.['gcs-automated-payments']?.releaseHoldback === nextElection)
+        await election.setChecked(nextElection)
+        expect((await recalculated).status()).toBe(200)
+      }
+      await expect(amount).toHaveValue('')
+      await amount.fill(override)
+      await expect(amount).toHaveValue(override)
+    }
     const requested = override ?? expected
     await dialog.getByRole('button', { name: 'Add', exact: true }).click()
     await expect(dialog).toBeHidden()

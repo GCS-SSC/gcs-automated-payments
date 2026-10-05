@@ -170,6 +170,29 @@ describe('gcs automated payments create hooks', () => {
     }), { enabledPaymentTypes: ['advance'] }, financials)
   })
 
+  it.each(['0.01', '75.01', '100.00'])('allows the exact selected gross amount %s up to the ceiling without substituting the suggestion', async amount => {
+    const handler = await loadHandler()
+    const body = { ...validBody, egcs_fc_paymentamount: amount }
+    await expect(handler({
+      phase: 'before-create', validatedBody: body, trx: {}, agreementId: 'agreement-1',
+      config: { enabledPaymentTypes: ['advance'] }
+    })).resolves.toEqual({ status: 'continue' })
+    expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({ submittedAmount: amount }), { enabledPaymentTypes: ['advance'] }, financials)
+    expect(body.egcs_fc_paymentamount).toBe(amount)
+    expect(savePaymentMetadataMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a one-cent overrun at the server create boundary', async () => {
+    const handler = await loadHandler()
+    await expect(handler({
+      phase: 'before-create', validatedBody: { ...validBody, egcs_fc_paymentamount: '100.01' },
+      trx: {}, agreementId: 'agreement-1', config: {}
+    })).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING',
+      details: [expect.objectContaining({ path: 'egcs_fc_paymentamount' })] })
+    expect(savePaymentMetadataMock).not.toHaveBeenCalled()
+  })
+
   it('continues without validating ceilings outside the before-create phase', async () => {
     const handler = await loadHandler()
 
