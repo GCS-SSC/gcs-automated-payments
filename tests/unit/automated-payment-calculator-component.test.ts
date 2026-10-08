@@ -71,12 +71,13 @@ const mountCalculator = (
         }
       }),
       UIcon: true,
-      UInput: defineComponent({
-        props: ['modelValue'],
+      CommonCurrencyInput: defineComponent({
+        props: ['modelValue', 'currency'],
         emits: ['update:modelValue'],
         setup(props, { emit }) {
           return () => h('input', {
             'data-test': 'holdback-amount',
+            'data-currency': props.currency,
             value: props.modelValue,
             onInput: (event: Event) => emit('update:modelValue', (event.target as HTMLInputElement).value)
           })
@@ -284,6 +285,7 @@ describe('automated payment amount calculator', () => {
 
     await wrapper.get('[data-test="release-holdback"]').trigger('click')
     await flushPromises()
+    expect(wrapper.get('[data-test="holdback-amount"]').attributes('data-currency')).toBe('cad')
     await wrapper.get('[data-test="holdback-amount"]').setValue('4.25')
     await flushPromises()
 
@@ -311,6 +313,9 @@ describe('automated payment amount calculator', () => {
     expect(body.egcs_fc_currency).toBe('usd')
     expect(wrapper.text()).toContain('USD $10.01')
     expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', suggestedAmount: '10.01' })
+    await wrapper.get('[data-test="release-holdback"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="holdback-amount"]').attributes('data-currency')).toBe('usd')
   })
 
   it('keeps the calculated ceiling independent of each edit to the actual payment amount', async () => {

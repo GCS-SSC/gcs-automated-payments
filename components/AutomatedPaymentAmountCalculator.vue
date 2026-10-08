@@ -10,7 +10,7 @@ import {
   ExtensionCheckbox,
   ExtensionFormField,
   ExtensionIcon,
-  ExtensionInput,
+  ExtensionCurrencyInput,
   useExtensionApi,
   useExtensionI18n
 } from '@gcs-ssc/extensions/ui'
@@ -295,9 +295,9 @@ watch([() => JSON.stringify(requestBody.value), endpoint], calculate, { immediat
       <ExtensionFormField
         v-if="releaseHoldback"
         :label="t('holdback_release_amount')">
-        <ExtensionInput
+        <ExtensionCurrencyInput
           v-model="holdbackReleaseAmount"
-          inputmode="decimal" />
+          :currency="selectedCurrency" />
       </ExtensionFormField>
     </div>
 
