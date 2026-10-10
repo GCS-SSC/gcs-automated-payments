@@ -1091,7 +1091,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await page.getByRole('tab', { name: 'Paiements' }).last().click()
     await page.getByRole('button', { name: 'Ajouter un paiement', exact: true }).click()
     await expect(page.getByRole('dialog', { name: 'Ajouter un paiement' })
-      .getByText('Plafond du paiement automatise', { exact: true })).toBeVisible()
+      .getByText('Plafond du paiement automatisé', { exact: true })).toBeVisible()
     await page.reload()
     await expect(page.getByRole('button', { name: 'Basculer la navigation' })).toBeVisible()
   })

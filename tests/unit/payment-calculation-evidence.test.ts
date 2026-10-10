@@ -43,7 +43,7 @@ describe('retained Payment calculation view', () => {
     expect(wrapper.text()).toContain('Montant de base')
     expect(wrapper.findAll('dd')[1]!.text().replace(/[^\d,]/g, '')).toBe('199999999999999999,98')
     expect(wrapper.findAll('dd')[1]!.classes()).toContain('wrap-anywhere')
-    expect(wrapper.get('h3').text()).toBe('Details du calcul')
+    expect(wrapper.get('h3').text()).toBe('Détails du calcul')
     expect(wrapper.text()).toContain('création de ce paiement')
     wrapper.unmount()
   })

@@ -24,7 +24,7 @@ it('owns config and payment labels in both locales without host translation look
   expect(wrapper.findAllComponents(ExtensionCheckbox).map(control => control.vm.$attrs.label)).toContain('Advance')
   locale.value = 'fr'
   await wrapper.vm.$nextTick()
-  expect(wrapper.text()).toContain('Parametres par defaut des paiements automatises')
+  expect(wrapper.text()).toContain('Paramètres par défaut des paiements automatisés')
   expect(wrapper.findAllComponents(ExtensionCheckbox).map(control => control.vm.$attrs.label)).toContain('Avance')
   expect(hostTranslate).not.toHaveBeenCalled()
 })

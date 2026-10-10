@@ -522,7 +522,7 @@ export const runPaymentAccuracyJourney = async (
       await page.setViewportSize({ width: 320, height: 844 })
       await page.goto(mobileBookmark.toString())
       await expect(retained.getByText(/création de ce paiement/)).toBeVisible()
-      await expect(retained.getByRole('heading', { level: 3, name: 'Details du calcul', exact: true })).toHaveCount(1)
+      await expect(retained.getByRole('heading', { level: 3, name: 'Détails du calcul', exact: true })).toHaveCount(1)
       const bounds = await retained.locator('dd').evaluateAll(elements => elements.map(element => {
         const box = element.getBoundingClientRect()
         const section = element.closest('[data-testid="detail-section"]')!.getBoundingClientRect()
