@@ -14,7 +14,7 @@ type AgreementInput = {
   egcs_fc_holdbackbasis: string
   egcs_fc_authorizedassistancestartdate: string
   egcs_fc_authorizedassistanceenddate: string
-  egcs_fc_applicantrecipients: Array<{ egcs_fc_applicantrecipient: string; egcs_fc_applicantrecipientsubtype: string }>
+  egcs_fc_applicantrecipients: Array<{ egcs_fc_applicantrecipient: string; egcs_fc_applicantrecipientsubtype: string; egcs_fc_agencyfinancialid: string }>
 }
 
 const getItems = async (page: Page, path: string) => {
@@ -88,6 +88,10 @@ export const createNativeAgreementThroughUi = async (page: Page, testInfo: TestI
   await expect(type).toHaveCount(1)
   const proponentType = proponentTypes.find(row => String(row.id) === input.egcs_fc_applicantrecipients[0]!.egcs_fc_applicantrecipientsubtype)!
   if (await type.isEnabled()) await choose(/—.*Proponent type/, String(proponentType.egcs_ay_name_en))
+  const financialIds = await getItems(page, `/api/agreements/lookups/financial-ids?permission_action=create&stream_id=${input.egcs_fc_transferpaymentstream}&proponent_id=${input.egcs_fc_applicantrecipients[0]!.egcs_fc_applicantrecipient}&limit=100`)
+  const financialId = financialIds.find(row => String(row.id) === input.egcs_fc_applicantrecipients[0]!.egcs_fc_agencyfinancialid)!
+  expect(financialId, 'The explicitly selected active Agency Financial ID').toBeTruthy()
+  await choose(/—.*Financial System ID/, String(financialId.egcs_ar_financialsystemid))
   await page.screenshot({ path: testInfo.outputPath('native-USD-Agreement-create-filled.png'), fullPage: true })
   const response = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/agreements')
   await page.getByRole('button', { name: 'Add', exact: true }).click()
@@ -95,6 +99,8 @@ export const createNativeAgreementThroughUi = async (page: Page, testInfo: TestI
   expect(createdResponse.ok(), await createdResponse.text()).toBe(true)
   const submitted = createdResponse.request().postDataJSON() as Record<string, unknown>
   expect(submitted.egcs_fc_currency).toBe(input.egcs_fc_currency)
+  expect((submitted.egcs_fc_applicantrecipients as AgreementInput['egcs_fc_applicantrecipients'])[0]!.egcs_fc_agencyfinancialid)
+    .toBe(input.egcs_fc_applicantrecipients[0]!.egcs_fc_agencyfinancialid)
   const created = await createdResponse.json() as Row
   await page.waitForURL(url => url.pathname === `/en/agreements/${created.id}`)
   await page.reload()

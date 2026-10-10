@@ -23,8 +23,13 @@ type AutomatedPaymentErrorCode =
   | 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING'
   | 'GCS_AUTOMATED_PAYMENTS_MISSING_HOLDBACK_BASES'
   | 'GCS_AUTOMATED_PAYMENTS_UNSUPPORTED_HOLDBACK_BASIS'
+  | 'GCS_AUTOMATED_PAYMENTS_EVIDENCE_INVALID'
 
 const automatedPaymentErrorMessages: Record<AutomatedPaymentErrorCode, GcsExtensionLocalizedMessage> = {
+  GCS_AUTOMATED_PAYMENTS_EVIDENCE_INVALID: {
+    en: 'The retained payment calculation is invalid or uses an unsupported version.',
+    fr: 'Le calcul conservé du paiement est invalide ou utilise une version non prise en charge.'
+  },
   GCS_AUTOMATED_PAYMENTS_AGREEMENT_REQUIRED: {
     en: 'An agreement is required before calculating an automated payment.',
     fr: 'Une entente est requise avant de calculer un paiement automatise.'

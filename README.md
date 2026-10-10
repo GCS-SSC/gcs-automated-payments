@@ -1,49 +1,80 @@
 # gcs-automated-payments
 
-## Audit ownership
+The extension supplies Payment amount suggestions and guards using the host SDK's
+`agreementFinancials.getPaymentCalculation` under the `agreement-payment-capacity`
+capability. The host owns financial source queries, exact entitlement, current
+Commitment selection, approved Credit Memo effects, Claim reductions and holdback.
+The extension controls enabled payment types and the release election; it never
+falls back to its own financial calculation when the SDK is unavailable.
 
-The extension creates no dedicated tables. Payment metadata uses `extensions.kv_entry` with owner type `fundingcasepayment`; the host resolves Payment → Commitment → Agreement → Program stream → Agency.
+The SDK receives the stable Agreement fiscal-year ID, Agency Commitment type,
+Payment type, selected fiscal end month, native currency, optional holdback release
+and optional same-Agreement Payment exclusion. Its eight exact values are base
+amount, Commitment remaining, ordinary availability, elected release, Claims
+through the last eligible Claim month, forecast through that Claim month, forecast
+through period end, and payments to date. Holdback and the single-Payment ceiling
+are also host-calculated. `availableBeforeHoldback` retains its established meaning
+of ordinary funds after reserving holdback.
 
-The manifest targets SDK ^0.3.7 and explicitly declares its dedicated tables (an empty
-list when there are none). Extension migration journals remain global infrastructure.
+Reimbursement entitlement uses successful reconciled Claims minus recorded paid.
+Advances replace forecast through the last Claim month with those Claims, add
+forecast through the selected month, and subtract recorded paid. Earlier fiscal
+years accumulate; later Claims and forecast remain outside the selected cutoff.
+The host rounds holdback down to whole dollars, reapplies the full reserve on each
+calculation, caps the reserve at unpaid eligibility and caps release at that reserve.
+Final-fiscal basis includes the final current year even when its funding is zero.
+The host caps each Payment at entitlement, Commitment/shared-coding capacity,
+availability plus elected release and `numeric(19,2)`; aggregate inputs retain cents
+and can exceed one persisted row. There is no currency conversion.
 
-Run `bun run test:audit` from this extension inside a GCS-SSC host checkout with
-`tooling/gcs-ssc` available. The extension owns its concrete fixtures; the private
-host adapter exercises the real audit migrations, declaration publication, row
-triggers, both ownership interpreters, rollback and immutable historical audiences.
-These reduced-schema ownership fixtures complement the extension’s normal tests.
-Set `AUDIT_EXTENSION_POSTGRES_URL` to a disposable PostgreSQL database URL ending
-in `_test` to run the same suite on PostgreSQL; the adapter creates and removes an
-isolated database. Without that variable, the suite uses in-memory PGlite.
+A suggestion is a ceiling, not a required amount. The calculator preserves an
+explicit amount choice, including cleared/invalid editing state. Financial selection
+and release changes recalculate the ceiling without replacing that choice. Create
+and update guards re-read host calculations under the Agreement lock and reject
+amounts above the live ceiling. Amount keystrokes do not change calculation inputs.
 
+Creation stores `payment-metadata.calculationEvidence` in extension KV under
+`fundingcasepayment`. Version 1 captures the selection, timestamp and all eight
+calculation details together with the exact ceiling, reserve and currency. The
+Payment calculation tab reads this creation-time snapshot without recomputing or
+enriching it from live financial records. Missing preexisting snapshots have an
+explicit empty state; corrupt authored evidence returns a localized error. The
+read route uses the host-dispatched Payment scope with Agreement Viewer authority
+and Agency/Stream extension enablement. English/French presentation, retry and
+stale Payment response protection belong to the extension. Existing holdback
+release metadata remains readable by update guards.
 
-Payment commitment ceilings use the SDK 0.3.5 `agreement-payment-capacity` host capability. The calculator passes the stable Agreement fiscal year, Agency commitment type, and the current Payment exclusion when recalculating. The host owns commitment selection, denied-Payment coverage and signed finalized JV/reversal effects, including shared Agency chart coding pools. The extension retains its claims, forecasts and holdback calculations and stores no JV-derived allocation versions. Capacity is exact aggregate decimal text.
+The tab uses the shared host workspace's full available width; the evidence body
+supplies a distinct Calculation details SDK section without a private max-width.
+Payment section bookmarks and reloads wait for successful tab discovery before URL normalization. Discovery failures retain the requested section
+and expose a local announced retry without replacing the Payment's business data.
+Evidence rows stack at phone widths and allow long exact currency text to wrap.
 
-SDK 0.3.6 also supplies correction-aware cumulative recorded paid totals by fiscal year and period. The calculator consumes those totals independently of shared capacity; protective line floors never become paid-to-date totals.
+The extension creates no dedicated tables. `extensions.kv_entry` retains host audit
+ownership: Payment → Commitment → Agreement → Program stream → Agency. The manifest
+explicitly declares an empty dedicated-table audit ownership list. Run
+`bun run test:audit` from this workspace; `AUDIT_EXTENSION_POSTGRES_URL` enables its
+isolated disposable PostgreSQL variant, otherwise it uses PGlite.
 
-## Payment calculation rules
+Run `bun run test:unit`, `bun run test:coverage`, `bun run typecheck`, the owning
+transaction/metadata PostgreSQL suite, and `bun run test:e2e` in this package. Unit
+and rendered tests verify SDK delegation, exact values, live bilingual rendering,
+release choices, creation evidence and failure recovery. Host tests own financial
+source selection and entitlement/holdback mathematics. The managed lifecycle journey
+uses public APIs to verify JV reversal/replacement and Corrections, then creates a
+later Payment; the fixed-input accuracy and native-currency journeys retain their
+independently authored ledgers. `GCS_PAYMENT_AUDIT_DIR` optionally retains the browser
+CSV/source ledger and JSON evidence outside replaceable Playwright output.
 
-Reimbursement entitlement is successful reconciled claims minus cumulative corrected recorded paid. Advance entitlement replaces forecast through the last successful claim month with successful reconciled claims, adds forecast through the selected payment month, and subtracts cumulative corrected recorded paid. Negative entitlement produces a zero ceiling. Fiscal periods use April = 0 through March = 11; earlier fiscal years accumulate, while later claims and later-year forecast do not enter the selected-period entitlement.
+For the host calculation and retained Payment evidence journey against the current
+NCIA demo seed, run:
 
-Product decisions confirmed October 2, 2026: one immutable currency per Agreement; whole-dollar floor holdback; recurring reserve clipped to unpaid eligibility; final-fiscal basis uses the final current Agreement fiscal year even when funding is zero.
+```sh
+GCS_AUTOMATED_PAYMENTS_E2E_GREP='verifies fixed advances' bun run test:e2e
+```
 
-The full holdback is the owning Agreement percentage applied exactly to either all current budget funding (`fullagreement`) or the final fiscal year's current budget funding (`finalfiscal`), **rounded down to whole dollars**. The final year comes from current, nondeleted Agreement budget fiscal-year parents; a final year with no live funding lines contributes $0. Historical/deleted versions do not extend that horizon. Percentage precision follows the stored `numeric(5,2)` field. Claims, forecasts, cash, JV effects, Corrections and payment amounts retain cents.
-
-Every calculation applies that full holdback again. Gross unpaid eligible balance is successful claims plus unclaimed current-year forecast plus future-year budget funding, minus corrected recorded paid, clamped to zero. The current reserve is the lesser of that balance and the full rounded holdback. Ordinary available funds are the balance minus the current reserve. Elected release is capped at the current reserve; it increases ordinary availability for this calculation. Prior releases do not reduce the full holdback and are not counted separately. For $1,000 eligible funding, $950 recorded paid and a $100 full holdback, the entire remaining $50 is reserved: no release gives a zero ceiling, releasing $25 gives $25, and requesting $100 releases at most $50.
-
-The single-payment ceiling is the least of nonnegative entitlement, the host SDK's exact commitment/shared-coding capacity, ordinary availability plus elected release, and the persisted `numeric(19,2)` row limit ($99,999,999,999,999,999.99). Aggregate amounts retain their complete exact value even when larger than one row.
-
-The ceiling is a limit, not a required Payment amount. The host initially suggests it, then keeps any explicit amount choice, including a cleared or temporarily invalid value while editing. Changing the fiscal period or holdback election recalculates the ceiling without replacing a manually chosen amount; an amount above the new limit remains visible and cannot be submitted. Actual amounts must still be positive exact money with at most two fractional digits. The host Payment payload, its gross accounting amount, offset planning and net disbursement use the chosen amount. Server create/update guards independently recompute the live ceiling under the Agreement lock, allowing lower or equal amounts and rejecting an overrun.
-
-The calculator request omits `egcs_fc_paymentamount`: actual amount keystrokes do not alter any financial source or holdback input. The calculation endpoint still accepts that optional field from existing callers, and create/update hooks retain it for server validation; the request and response schemas, saved holdback metadata, authorization, lifecycle and immutable evidence contracts are unchanged. Switching to another Agreement clears the holdback election and rejects stale responses from the old owner.
-
-`holdbackAmount` now uses whole-dollar rounding; `holdbackReleaseAmount` is the elected amount bounded by the **current** reserve; `availableBeforeHoldback` continues to expose ordinary available funds. Existing metadata remains readable by update validation, but saved prior release metadata no longer influences later calculations. The pure helper's internal `availableForDisbursementBeforeHoldback` input now carries gross unpaid eligible balance. `holdbackAlreadyReleased` and the calculation-only Payment/metadata queries are removed.
-
-Each Agreement has one required, immutable native currency. Every Payment must match its owning Agreement; different currencies require separate Agreements. The calculator first reads `Funding_Case_Agreement_Profile.egcs_fc_currency` and rejects a missing/invalid denomination or a differing request before reading amounts or calling financial services. Budget, Forecast and successful Claim/Reconciliation lines are filtered defensively by that currency, and both SDK paid-to-date and commitment capacity services receive it. Reconciliation currency comes from its source Claim line. There is no exchange-rate conversion or addition of different currency units. Full-agreement and final-fiscal holdback bases use the single Agreement currency. An empty paid ledger contributes zero; a nonzero ledger without a matching currency is rejected. Disabled extension payment types still defer to the host's native-currency Payment validation.
-Before this change, HTTP calculation requests omitted currency and every result was labelled `CAD`. Requests now carry lower-case `egcs_fc_currency`; results carry the selected upper-case currency code. The host calculator model supplies `model.currency`, creation/update hooks use the actual Payment currency, and created rows must match their request currency. Omitted currency defaults to CAD for existing standalone callers; cleared/invalid explicit currency does not default. Saved release metadata retains its existing shape. The UI keeps the selected currency, clears the previous calculation while recalculating, ignores stale responses, and rejects a current response for another currency.
-
-The independently authored unit financial ledgers cover advances below/above claims, reimbursement underpayment/overpayment, signed SDK JV/Correction totals, fiscal boundaries, shared coding capacity, rounded holdback and large exact amounts. `tests/integration/calculation-ledger-postgres.test.ts` executes the extension's source queries against PostgreSQL to verify current/stable budget roots, successful latest reconciliation attempts, inactive/deleted rows, fiscal cutoffs and exact NUMERIC transport. Host projection mathematics remains owned by host tests and is supplied through the SDK in this suite.
-
-Run `bun run test:e2e` in this package for the managed lifecycle browser journey. It verifies JV reversal/replacement, posts a separate signed Correction through public host APIs, checks corrected paid-to-date and capacity, preserves the source Payment and Outcome Allocation snapshot, and generates a later Payment against the revised capacity. The journey saves screenshots of the posted Correction and generated Payment. Standalone unit tests inject the public financial service; PostgreSQL tests retain the extension's transaction/metadata checks. Core financial rules and permissions are tested by the host.
-
-The same managed suite includes a fixed-input browser journey with $1,000.05 funding and Commitment, $1,020.05 submitted claims, and $1,000.05 accepted reconciliations. It checks the advance overpayment, reimbursement shortfall, repeated $100.00 holdback, unused release election, and final $50.00 reserve/release. Each calculation rejects a one-cent overrun without creating a Payment; accepted Payments are checked in the calculator, persisted detail, and loaded detail page. Set `GCS_PAYMENT_AUDIT_DIR` to retain `automated-payment-scenarios.csv`, the source ledger and raw JSON, and the JV/Correction checkpoint CSV/JSON outside Playwright's replaceable results directory. A suggested ceiling is distinct from the amount actually selected and paid; both are logged.
+The managed runner still owns a fresh build, isolated database and server. The
+optional grep selects the independent fixed-input journey, including all eight
+creation-time evidence values after Payment approval. The full suite also includes
+an Outcome Cost Allocator journey; that extension's migration to the new coding
+allocator remains outside this change.

@@ -98,7 +98,19 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
         String(context.createdRecord.id),
         {
           releaseHoldback: extensionPayload.releaseHoldback,
-          holdbackReleaseAmount: calculation.holdbackReleaseAmount
+          holdbackReleaseAmount: calculation.holdbackReleaseAmount,
+          ...(calculation.enabled ? { calculationEvidence: {
+            version: 1,
+            capturedAt: new Date().toISOString(),
+            input: {
+              fiscalYearId: parsed.data.egcs_fc_fiscalyear,
+              commitmentTypeId: parsed.data.egcs_fc_commitmenttype,
+              paymentType: parsed.data.egcs_fc_paymenttype,
+              periodEnd: parsed.data.egcs_fc_periodend,
+              currency: parsed.data.egcs_fc_currency
+            },
+            calculation
+          } } : {})
         }
       )
       return { status: 'continue' }

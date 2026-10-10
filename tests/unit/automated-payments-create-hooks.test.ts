@@ -223,7 +223,8 @@ describe('gcs automated payments create hooks', () => {
     }), {}, financials)
     expect(savePaymentMetadataMock).toHaveBeenCalledWith(trx, 'payment-1', {
       releaseHoldback: true,
-      holdbackReleaseAmount: '8.00'
+      holdbackReleaseAmount: '8.00',
+      calculationEvidence: expect.objectContaining({ version: 1, capturedAt: expect.any(String), calculation: expect.objectContaining({ holdbackReleaseAmount: '8.00' }) })
     })
   })
 
@@ -241,6 +242,16 @@ describe('gcs automated payments create hooks', () => {
       config: {}
     })).rejects.toBe(failure)
     expect(savePaymentMetadataMock).not.toHaveBeenCalled()
+  })
+
+  it('does not retain an unauthored zero calculation when this payment type is disabled', async () => {
+    calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({ enabled: false, holdbackReleaseAmount: '0.00' })
+    const handler = await loadHandler()
+    await handler({ phase: 'after-create', validatedBody: validBody, trx: {}, agreementId: '1',
+      createdRecord: { id: '1' }, config: {} })
+    expect(savePaymentMetadataMock).toHaveBeenCalledWith(expect.anything(), '1', {
+      releaseHoldback: true, holdbackReleaseAmount: '0.00'
+    })
   })
 
   it('validates updates against the selected commitment and persisted holdback metadata', async () => {
@@ -394,7 +405,7 @@ describe('gcs automated payments create hooks', () => {
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({ currency: 'usd' }), {}, financials)
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({ currency: 'usd', excludePaymentId: '1' }), {}, financials)
     expect(body.egcs_fc_currency).toBe('usd')
-    expect(savePaymentMetadataMock).toHaveBeenCalledWith(expect.anything(), '1', { releaseHoldback: true, holdbackReleaseAmount: '8.00' })
+    expect(savePaymentMetadataMock).toHaveBeenCalledWith(expect.anything(), '1', expect.objectContaining({ releaseHoldback: true, holdbackReleaseAmount: '8.00', calculationEvidence: expect.objectContaining({ input: expect.objectContaining({ currency: 'usd' }) }) }))
   })
 
   it('rejects a created payment currency different from its validated request before saving metadata', async () => {

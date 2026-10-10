@@ -9,6 +9,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
+  grep: process.env.GCS_AUTOMATED_PAYMENTS_E2E_GREP ? new RegExp(process.env.GCS_AUTOMATED_PAYMENTS_E2E_GREP) : undefined,
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000',
     browserName: 'chromium',

@@ -11,7 +11,8 @@ describe('Automated Payments stream configuration', () => {
   it('publishes both extension contribution boundaries', () => {
     expect(extension.key).toBe('gcs-automated-payments')
     expect(extension.client?.paymentAmountCalculators).toHaveLength(1)
-    expect(extension.serverHandlers).toHaveLength(1)
+    expect(extension.serverHandlers).toHaveLength(2)
+    expect(extension.client?.tabs).toEqual([expect.objectContaining({ target: 'payment', id: 'calculation-evidence' })])
     expect(extension.nitroPlugin).toBe('./server/plugins/create-hooks.ts')
   })
 

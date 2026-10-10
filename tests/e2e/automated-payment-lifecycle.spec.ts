@@ -371,17 +371,17 @@ test.describe.serial('Automated payment lifecycle', () => {
     try {
       await login(page, 'root@example.com', 'password123')
       const agreementsResponse = await page.request.get(
-        '/api/agreements?page=1&limit=10&search=Health%20Canada%20Cost%20Agreement%201%20-%20Showcase'
+        '/api/agreements?page=1&limit=10&search=NCIA-26-001'
       )
       await expectOk(agreementsResponse, 'Discover the managed automated-payment agreement')
       const agreements = await responseJson<{
         items: Array<{
           id: string | number
-          egcs_fc_title_en: string
+          egcs_fc_agreementnumber: string
         }>
       }>(agreementsResponse)
       const matches = agreements.items.filter(item =>
-        item.egcs_fc_title_en === 'Health Canada Cost Agreement 1 - Showcase')
+        item.egcs_fc_agreementnumber === 'NCIA-26-001')
       if (matches.length !== 1) {
         throw new Error(`Expected one managed automated-payment agreement, found ${matches.length}.`)
       }
@@ -441,7 +441,8 @@ test.describe.serial('Automated payment lifecycle', () => {
     expect(proponentTypes.items.length).toBeGreaterThan(0)
     await expectOk(await page.request.post(`/api/agreements/${target.agreementId}/applicant-recipients`, { data: {
       egcs_fc_applicantrecipient: recipient.id,
-      egcs_fc_applicantrecipientsubtype: String(proponentTypes.items[0]!.id)
+      egcs_fc_applicantrecipientsubtype: String(proponentTypes.items[0]!.id),
+      egcs_fc_agencyfinancialid: recipient.egcs_fc_agencyfinancialid
     } }), 'Link isolated payment payee')
     const payee = await resolvePaymentAuditPayee(page, target.agreementId, String(recipient.id))
 

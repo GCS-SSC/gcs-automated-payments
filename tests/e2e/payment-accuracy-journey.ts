@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { expect, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test'
+import { expect, type Browser, type Locator, type Page, type Request, type TestInfo } from '@playwright/test'
 
 type Owner = { agencyId: string; agreementId: string; programId: string; streamId: string }
 type Id = { id: string }
@@ -57,11 +57,11 @@ export const createPaymentAuditRecipient = async (page: Page, agencyId: string) 
     egcs_ar_description_fr: 'Données isolées pour vérifier les calculs de paiement.',
     egcs_ar_active: true
   })
-  await post(page, `/api/applicant-recipients/${recipient.id}/agency-financial-ids`, {
+  const financialId = await post(page, `/api/applicant-recipients/${recipient.id}/agency-financial-ids`, {
     egcs_ar_agency: agencyId,
     egcs_ar_financialsystemid: String(BigInt(9000000) + BigInt(recipient.id))
   })
-  return recipient
+  return { ...recipient, egcs_fc_agencyfinancialid: financialId.id }
 }
 
 /** Resolves the explicit payee from active Proponents linked to this Agreement. */
@@ -220,11 +220,17 @@ export const preparePaymentAuditFixture = async (
   const statuses = await read<Array<{ id: string; agencyId: string; nameEn: string; isDraft: boolean; terminal: boolean; readOnly: boolean }>>(page, '/api/statuses')
   const agencyStatuses = statuses.filter(status => status.agencyId === owner.agencyId)
   const draft = agencyStatuses.find(status => status.isDraft)!
-  const approved = agencyStatuses.find(status => status.nameEn === 'Approved')!
-  const denied = agencyStatuses.find(status => status.nameEn === 'Denied')!
+  const denied = agencyStatuses.find(status => status.nameEn === 'Rejected')!
   const paid = agencyStatuses.find(status => status.nameEn === 'Paid' && status.terminal)!
-  const verifier = (await items(page, '/api/users/lookups?status=active&search=user11%40example.com')).find(row => row.egcs_cn_email === 'user11@example.com')!
-  expect(draft && approved && denied && paid && verifier).toBeTruthy()
+  const successStatuses = {
+    fundingcaseagreementcommitment: agencyStatuses.find(status => status.nameEn === 'Committed' && !status.terminal),
+    fundingcaseagreementclaim: agencyStatuses.find(status => status.nameEn === 'Accepted' && !status.terminal),
+    fundingclaimreconcile: agencyStatuses.find(status => status.nameEn === 'Reconciled' && status.terminal),
+    fundingcaseforecast: agencyStatuses.find(status => status.nameEn === 'Completed' && status.terminal),
+    fundingcasepayment: paid
+  }
+  const verifier = (await items(page, '/api/users/lookups?status=active&search=user03%40example.com')).find(row => row.egcs_cn_email === 'user03@example.com')!
+  expect(draft && denied && verifier && Object.values(successStatuses).every(Boolean)).toBeTruthy()
   const template = await post(page, `/api/agency/${owner.agencyId}/approval-templates`, {
     egcs_cn_name_en: `Payment audit approval ${token}`, egcs_cn_name_fr: `Approbation des paiements ${token}`,
     egcs_cn_description_en: 'Independent financial verification.', egcs_cn_description_fr: 'Vérification financière indépendante.',
@@ -233,7 +239,7 @@ export const preparePaymentAuditFixture = async (
       egcs_cn_defaultuser: verifier.id, egcs_cn_approvertitle: 'Financial verifier', certifications: [] }]
   })
   await post(page, `/api/agency/${owner.agencyId}/approval-templates/${template.id}/publish`, {})
-  for (const entityType of ['fundingcaseagreementcommitment', 'fundingcaseagreementclaim', 'fundingclaimreconcile', 'fundingcaseforecast', 'fundingcasepayment']) {
+  for (const entityType of Object.keys(successStatuses) as Array<keyof typeof successStatuses>) {
     const workflow = await post(page, `/api/agency/${owner.agencyId}/workflows`, {
       egcs_cn_entitytype: entityType, egcs_cn_name_en: `Audit ${entityType} ${token}`, egcs_cn_name_fr: `Vérification ${entityType} ${token}`,
       egcs_cn_description_en: 'Disposable verification.', egcs_cn_description_fr: 'Vérification jetable.',
@@ -242,7 +248,7 @@ export const preparePaymentAuditFixture = async (
     })
     await post(page, `/api/agency/${owner.agencyId}/workflows/${workflow.id}/members`, {
       egcs_cn_sequence: 1, egcs_cn_kind: 'approval_template', egcs_cn_approvaltemplate: template.id,
-      egcs_cn_successstatus: entityType === 'fundingcasepayment' ? paid.id : approved.id, egcs_cn_failurestatus: denied.id, owners: []
+      egcs_cn_successstatus: successStatuses[entityType]!.id, egcs_cn_failurestatus: denied.id, owners: []
     })
     await post(page, `/api/agency/${owner.agencyId}/workflows/${workflow.id}/publish`, {})
     await post(page, `${streamBase}/workflows`, { egcs_tp_workflow: workflow.id })
@@ -259,7 +265,8 @@ export const preparePaymentAuditFixture = async (
     egcs_fc_agreementsubtype: subtype.id, egcs_fc_furtherdistribution: false, egcs_fc_holdback: 10, egcs_fc_holdbackbasis: basis.id,
     egcs_fc_authorizedassistancestartdate: String(fiscal.egcs_ay_startdate).slice(0, 10),
     egcs_fc_authorizedassistanceenddate: String(fiscal.egcs_ay_enddate).slice(0, 10),
-    egcs_fc_applicantrecipients: [{ egcs_fc_applicantrecipient: recipient.id, egcs_fc_applicantrecipientsubtype: proponentTypes[0]!.id }], confirmations: []
+    egcs_fc_applicantrecipients: [{ egcs_fc_applicantrecipient: recipient.id, egcs_fc_applicantrecipientsubtype: proponentTypes[0]!.id,
+      egcs_fc_agencyfinancialid: recipient.egcs_fc_agencyfinancialid }], confirmations: []
   }
   const agreement = await post(page, '/api/agreements', agreementInput)
   owner.agreementId = String(agreement.id)
@@ -279,15 +286,25 @@ export const preparePaymentAuditFixture = async (
 export const runPaymentAccuracyJourney = async (
   page: Page, browser: Browser, testInfo: TestInfo, source: Owner, helpers: Helpers
 ) => {
+  const browserRequests = new Map<string, number>()
+  let calculatorRequests = 0
+  const recordRequest = (request: Request) => {
+    const pathname = new URL(request.url()).pathname
+    if (!pathname.startsWith('/api/')) return
+    const key = `${request.method()} ${pathname}`
+    browserRequests.set(key, (browserRequests.get(key) ?? 0) + 1)
+    if (pathname.endsWith('/calculate-payment') && request.method() === 'POST') calculatorRequests += 1
+  }
+  page.on('request', recordRequest)
   const { owner, agreementBase, fiscalYear, fiscal, budgetLine, linkedChart, payee } = await preparePaymentAuditFixture(page, source)
   const commitmentType = (await items(page, `${agreementBase}/commitments/lookups/types`))[0]!
-  const commitment = await post(page, `${agreementBase}/commitments`, { egcs_fc_type: commitmentType.id, egcs_fc_currency: 'cad' })
+  const commitment = await post(page, `${agreementBase}/commitments`, { egcs_fc_type: commitmentType.id, egcs_fc_currency: 'cad', egcs_fc_totalamount: '1000.05' })
   const commitmentLine = await post(page, `${agreementBase}/commitment-lines`, {
     egcs_fc_commitment: commitment.id, egcs_fc_commitmentlinenumber: 1,
     egcs_fc_transferpaymentstreamchartofaccount: linkedChart.id, egcs_fc_amount: '1000.05'
   })
   const approver = await browser.newPage()
-  await helpers.login(approver, 'user11@example.com', 'password123')
+  await helpers.login(approver, 'user03@example.com', 'password123')
   const complete = async (entityType: string, id: string) => {
     await helpers.complete(page, entityType, String(id), 'Amounts verified against independent payment-audit ledger.')
     await helpers.approveAll(approver, entityType, String(id))
@@ -390,10 +407,10 @@ export const runPaymentAccuracyJourney = async (
     expect(rejected.status(), await rejected.text()).toBe(400)
     expect(await rejected.text()).toContain('GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING')
     expect((await read<{ payments: Id[] }>(page, `${agreementBase}/payments-overview`)).payments.map(row => row.id)).toEqual(prior)
-    return { expected, body }
+    return { expected, body, actual }
   }
   const createPaymentUi = async (scenario: string, paymentType: 'advance' | 'reimbursement', periodEnd: number, release = '0.00', override?: string) => {
-    const { expected } = await check(scenario, paymentType, periodEnd, release)
+    const { expected, actual } = await check(scenario, paymentType, periodEnd, release)
     const before = (await read<{ payments: Id[] }>(page, `${agreementBase}/payments-overview`)).payments.map(row => row.id)
     await page.goto(`/en/agreements/${owner.agreementId}`)
     await page.waitForURL(url => url.searchParams.get('section') === 'general')
@@ -425,17 +442,27 @@ export const runPaymentAccuracyJourney = async (
     await expect(amount).toHaveAttribute('required')
     await expect(amount).toHaveAttribute('aria-required', 'true')
     if (override !== undefined) {
+      const requestsBeforeAmount = calculatorRequests
+      // Focus swaps the formatted currency display for its editable decimal draft.
+      await amount.click()
+      await expect(amount).toHaveValue(expected)
       await amount.fill('')
+      await expect(amount).toHaveValue('')
+      expect(calculatorRequests, 'Editing the selected amount does not recalculate its ceiling').toBe(requestsBeforeAmount)
       const election = dialog.getByRole('checkbox')
       const initialElection = await election.isChecked()
       // A genuine ceiling recalculation must not replace an explicitly cleared amount.
       for (const nextElection of [!initialElection, initialElection]) {
+        const requestsBeforeElection = calculatorRequests
         const recalculated = page.waitForResponse(response => response.url().includes('/calculate-payment')
           && response.request().method() === 'POST'
           && response.request().postDataJSON()?.extensions?.['gcs-automated-payments']?.releaseHoldback === nextElection)
         await election.setChecked(nextElection)
         expect((await recalculated).status()).toBe(200)
+        expect(calculatorRequests, 'Each holdback election sends one calculation request').toBe(requestsBeforeElection + 1)
       }
+      await expect(amount).toHaveValue('')
+      await amount.click()
       await expect(amount).toHaveValue('')
       await amount.fill(override)
       await expect(amount).toHaveValue(override)
@@ -461,6 +488,56 @@ export const runPaymentAccuracyJourney = async (
     await page.goto(`/en/agreements/${owner.agreementId}/payments/${created.id}`)
     await expect(page.getByRole('tab', { name: 'Payment completion', exact: true })).toBeVisible()
     await expect(page.getByText(new RegExp(`\\$${requested.replace('.', '\\.')}\\b`)).first()).toBeVisible()
+    await page.getByRole('tab', { name: 'Payment calculation', exact: true }).click()
+    const retained = page.getByTestId('payment-calculation-evidence')
+    await expect(retained.getByText(/Calculation retained when this payment was created/)).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Payment calculation', exact: true })).toHaveCount(1)
+    await expect(retained.getByRole('heading', { level: 3, name: 'Calculation details', exact: true })).toHaveCount(1)
+    await expect(page.getByTestId('detail-section')).toHaveAttribute('data-section-width', 'full')
+    await expect(page.getByTestId('detail-section')).toHaveClass(/max-w-4xl/)
+    if (scenario === '01_initial_advance') {
+      const bookmark = new URL(page.url())
+      bookmark.searchParams.set('trace', 'evidence')
+      bookmark.hash = '#snapshot'
+      await page.goto(bookmark.toString())
+      for (const visit of ['bookmark', 'reload']) {
+        if (visit === 'reload') await page.reload()
+        await expect(retained.getByText(/Calculation retained when this payment was created/)).toBeVisible()
+        expect(new URL(page.url()).searchParams.get('section'), visit).toBe(bookmark.searchParams.get('section'))
+        expect(new URL(page.url()).searchParams.get('trace')).toBe('evidence')
+        expect(new URL(page.url()).hash).toBe('#snapshot')
+        await expect(page.getByTestId('detail-section')).toHaveAttribute('data-section-width', 'full')
+      }
+      const viewport = page.viewportSize()!
+      const mobileBookmark = new URL(bookmark)
+      mobileBookmark.pathname = `/fr/ententes/${owner.agreementId}/paiements/${created.id}`
+      await page.setViewportSize({ width: 320, height: 844 })
+      await page.goto(mobileBookmark.toString())
+      await expect(retained.getByText(/création de ce paiement/)).toBeVisible()
+      await expect(retained.getByRole('heading', { level: 3, name: 'Details du calcul', exact: true })).toHaveCount(1)
+      const bounds = await retained.locator('dd').evaluateAll(elements => elements.map(element => {
+        const box = element.getBoundingClientRect()
+        const section = element.closest('[data-testid="detail-section"]')!.getBoundingClientRect()
+        return { left: box.left, right: box.right, sectionLeft: section.left, sectionRight: section.right,
+          overflow: element.scrollWidth > element.clientWidth }
+      }))
+      expect(bounds).toHaveLength(8)
+      for (const bound of bounds) {
+        expect(bound.left).toBeGreaterThanOrEqual(bound.sectionLeft)
+        expect(bound.right).toBeLessThanOrEqual(bound.sectionRight)
+        expect(bound.right).toBeLessThanOrEqual(320)
+        expect(bound.overflow).toBe(false)
+      }
+      await page.screenshot({ path: testInfo.outputPath('payment-evidence-fr-mobile320.png'), fullPage: true })
+      await page.setViewportSize(viewport)
+      await page.goto(bookmark.toString())
+      await expect(retained.getByText(/Calculation retained when this payment was created/)).toBeVisible()
+    }
+    const retainedAmounts = retained.locator('dd')
+    await expect(retainedAmounts).toHaveCount(8)
+    for (const [index, detail] of actual.details.entries()) {
+      expect((await retainedAmounts.nth(index).innerText()).replace(/[^\d.-]/g, '')).toBe(detail.value)
+    }
     await page.screenshot({ path: testInfo.outputPath(`${scenario}.png`), fullPage: true })
   }
   const reconcile = async (month: number, submitted: string, reconciled: string) => {
@@ -507,6 +584,10 @@ export const runPaymentAccuracyJourney = async (
     await testInfo.attach('manual-calculation-scenarios', { path: join(testInfo.outputDir, 'automated-payment-scenarios.csv'), contentType: 'text/csv' })
     await testInfo.attach('source-financial-ledger', { path: join(testInfo.outputDir, 'automated-payment-ledger.csv'), contentType: 'text/csv' })
   } finally {
+    page.off('request', recordRequest)
+    await testInfo.attach('browser-api-request-counts', {
+      body: JSON.stringify(Object.fromEntries(browserRequests), null, 2), contentType: 'application/json'
+    })
     await approver.close()
   }
 }

@@ -48,13 +48,13 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
   expect(beforeBudget.lineItems).toHaveLength(1)
   expect(beforeBudget.lineItems[0]!.egcs_fc_fundingagreementbudgetfiscalyear).toBe(fiscalYear.id)
   const types = await read<{ items: Row[] }>(page, `${agreementBase}/commitments/lookups/types?limit=100`)
-  const commitment = await post(page, `${agreementBase}/commitments`, { egcs_fc_type: types.items[0]!.id, egcs_fc_currency: 'cad' })
+  const commitment = await post(page, `${agreementBase}/commitments`, { egcs_fc_type: types.items[0]!.id, egcs_fc_currency: 'cad', egcs_fc_totalamount: '1000.05' })
   const line = await post(page, `${agreementBase}/commitment-lines`, {
     egcs_fc_commitment: commitment.id, egcs_fc_commitmentlinenumber: 1,
     egcs_fc_transferpaymentstreamchartofaccount: linkedChart.id, egcs_fc_amount: '1000.05'
   })
   const approver = await browser.newPage()
-  await helpers.login(approver, 'user11@example.com', 'password123')
+  await helpers.login(approver, 'user03@example.com', 'password123')
   const complete = async (entityType: string, id: string) => {
     await helpers.complete(page, entityType, id, 'Empty final fiscal year has zero native funding; independent H=0 verified.')
     await helpers.approveAll(approver, entityType, id)

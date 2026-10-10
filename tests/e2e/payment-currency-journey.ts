@@ -133,7 +133,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
     egcs_fc_totalamount: '600.07', egcs_fc_programfunding: '600.07', egcs_fc_fundingsources: [], egcs_fc_currency: 'usd'
   })
   const approver = await browser.newPage()
-  await helpers.login(approver, 'user11@example.com', 'password123')
+  await helpers.login(approver, 'user03@example.com', 'password123')
   const complete = async (entityType: string, id: string) => {
     await helpers.complete(page, entityType, id, 'Native currency financial evidence independently checked.')
     await helpers.approveAll(approver, entityType, id)
@@ -211,6 +211,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       await expect(dialog.getByRole('combobox', { name: /^Currency/ })).toBeDisabled()
       await expect(dialog.getByRole('combobox', { name: /^Currency/ })).toHaveText(currencyLabel(currency))
       await choose(dialog, /^Commitment type/, /Commitment/)
+      await dialog.getByRole('textbox', { name: /^Amount/ }).fill(budgets[currency])
       const response = page.waitForResponse(candidate => candidate.request().method() === 'POST' && candidate.url().endsWith(`${agreementBase}/commitments`))
       await dialog.getByRole('button', { name: 'Add', exact: true }).click()
       const created = await (await response).json() as Row
@@ -218,7 +219,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       commitmentIds[currency] = created.id
       commitmentType = String(created.egcs_fc_type)
       await reject(currency, 'agreement-commitment-currency-mismatch', `${agreementBase}/commitments`, {
-        egcs_fc_type: created.egcs_fc_type, egcs_fc_currency: opposite
+        egcs_fc_type: created.egcs_fc_type, egcs_fc_currency: opposite, egcs_fc_totalamount: budgets[currency]
       })
       const persistedCommitment = await read<Row>(page, `${agreementBase}/commitments/${created.id}`)
       expect(persistedCommitment.egcs_fc_currency, 'Persisted native Commitment detail currency').toBe(currency)
