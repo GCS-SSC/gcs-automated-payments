@@ -296,9 +296,9 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   const statuses = (await responseJson<StatusRow[]>(statusesResponse))
     .filter(status => status.agencyId === target.agencyId)
   const draft = statuses.find(status => status.isDraft)
-  const pending = statuses.find(status => status.nameEn === 'Pending Approval')
+  const pending = statuses.find(status => status.nameEn === 'Under review')
   const approved = statuses.find(status => status.nameEn === 'Approved')
-  const denied = statuses.find(status => status.nameEn === 'Denied')
+  const denied = statuses.find(status => status.nameEn === 'Rejected')
   if (!draft || !pending || !approved || !denied) {
     throw new Error('Required seeded lifecycle statuses are unavailable.')
   }
@@ -431,7 +431,7 @@ test.describe.serial('Automated payment lifecycle', () => {
 
     const agreementResponse = await page.request.get(`/api/agreements/${target.agreementId}`)
     await expectOk(agreementResponse, 'Resolve automated-payment stream program')
-    const agreement = await responseJson<{ program_id: string }>(agreementResponse)
+    const agreement = await responseJson<{ program_id: string; egcs_fc_authorizedassistancestartdate: string; egcs_fc_authorizedassistanceenddate: string }>(agreementResponse)
     const recipient = await createPaymentAuditRecipient(page, target.agencyId)
     const proponentTypesResponse = await page.request.get(
       `/api/agreements/lookups/proponent-types?stream_id=${target.streamId}&proponent_id=${recipient.id}`
@@ -453,11 +453,19 @@ test.describe.serial('Automated payment lifecycle', () => {
       .filter(status => status.agencyId === target.agencyId && status.isDraft)
       .map(status => String(status.id)))
     const draftStatusId = [...draftStatusIds][0]
-    const approvedStatusId = statusCatalog
-      .find(status => status.agencyId === target.agencyId && status.nameEn === 'Approved')?.id
+    const workflowsResponse = await page.request.get(`/api/transfer-payments/${target.programId}/streams/${target.streamId}/workflows?page=1&limit=100`)
+    await expectOk(workflowsResponse, 'Read authoritative Commitment Workflow')
+    const workflows = await responseJson<{ items: Array<IdRow & { egcs_tp_workflow: string; egcs_cn_entitytype: string; egcs_cn_purpose: string; publicationState: string }> }>(workflowsResponse)
+    const commitmentWorkflow = workflows.items.find(item => item.egcs_cn_entitytype === 'fundingcaseagreementcommitment'
+      && item.egcs_cn_purpose === 'approval_submission' && item.publicationState === 'published')
+    expect(commitmentWorkflow).toBeTruthy()
+    const workflowResponse = await page.request.get(`/api/agency/${target.agencyId}/workflows/${commitmentWorkflow!.egcs_tp_workflow}`)
+    await expectOk(workflowResponse, 'Read configured Commitment success status')
+    const workflow = await responseJson<{ members: Array<{ egcs_cn_successstatus: string }> }>(workflowResponse)
+    const commitmentSuccessStatusId = workflow.members.at(-1)?.egcs_cn_successstatus
     const inProgressStatusId = statusCatalog
-      .find(status => status.agencyId === target.agencyId && status.nameEn === 'In Progress')?.id
-    if (!draftStatusId || !approvedStatusId || !inProgressStatusId) {
+      .find(status => status.agencyId === target.agencyId && status.nameEn === 'Active')?.id
+    if (!draftStatusId || !commitmentSuccessStatusId || !inProgressStatusId) {
       throw new Error('Required seeded status identities are unavailable.')
     }
 
@@ -535,12 +543,32 @@ test.describe.serial('Automated payment lifecycle', () => {
     })
     await expectOk(allocationEnableResponse, 'Enable outcome allocation for stream')
 
+    // Allocation inputs are outcomes referenced by this Agreement's activities.
+    const outcomeToken = Date.now()
+    const outcomeResponse = await page.request.post(`/api/transfer-payments/${agreement.program_id}/outcomes`, { data: {
+      egcs_tp_name_en: `Payment allocation outcome ${outcomeToken}`, egcs_tp_name_fr: `Résultat de paiement ${outcomeToken}`,
+      egcs_tp_description_en: 'Owned payment allocation outcome.', egcs_tp_description_fr: 'Résultat propre à la répartition des paiements.'
+    } })
+    await expectOk(outcomeResponse, 'Author payment allocation outcome')
+    const outcome = await responseJson<IdRow>(outcomeResponse)
+    const partiesResponse = await page.request.get(`/api/agreements/${target.agreementId}/activities/lookups/responsible-parties?limit=100`)
+    await expectOk(partiesResponse, 'Read Agreement activity responsible parties')
+    const parties = await responseJson<{ items: IdRow[] }>(partiesResponse)
+    expect(parties.items.length).toBeGreaterThan(0)
+    await expectOk(await page.request.post(`/api/agreements/${target.agreementId}/activities`, { data: {
+      egcs_fc_name_en: `Payment allocation ${outcomeToken}`, egcs_fc_name_fr: `Répartition des paiements ${outcomeToken}`,
+      egcs_fc_description_en: 'Exercise configured outcome coding.', egcs_fc_description_fr: 'Vérifier le codage du résultat configuré.',
+      egcs_fc_expectedresults_en: 'Exact unpaid allocation.', egcs_fc_expectedresults_fr: 'Répartition exacte du montant impayé.',
+      egcs_fc_startdate: agreement.egcs_fc_authorizedassistancestartdate.slice(0, 10), egcs_fc_enddate: agreement.egcs_fc_authorizedassistanceenddate.slice(0, 10),
+      outcome_ids: [String(outcome.id)], responsible_party_ids: [String(parties.items[0]!.id)]
+    } }), 'Reference owned allocation outcome through an Agreement activity')
+
     const allocationResponse = await page.request.get(
       `/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`
     )
     await expectOk(allocationResponse, 'Fetch cost allocation inputs')
     const allocationPayload = await responseJson<AllocationPayload>(allocationResponse)
-    const firstOutcomeId = String(allocationPayload.outcomes[0]?.id ?? '')
+    const firstOutcomeId = String(allocationPayload.outcomes.find(item => String(item.id) === String(outcome.id))?.id ?? '')
     const commitmentType = String(allocationPayload.commitmentTypes[0]?.id ?? '')
     expect(firstOutcomeId).not.toBe('')
     expect(commitmentType).not.toBe('')
@@ -634,9 +662,27 @@ test.describe.serial('Automated payment lifecycle', () => {
     await page.waitForURL(url => url.searchParams.get('section') === 'general')
     await page.getByRole('tab', { name: 'Commitments' }).click()
     await expect(page.getByRole('tab', { name: 'Commitments', exact: true })).toHaveAttribute('aria-selected', 'true')
-    await page.getByRole('button', { name: 'Add commitment', exact: true }).click()
-    const commitmentDialog = page.getByRole('dialog', { name: 'Add commitment' })
-    await expect(commitmentDialog.getByText('Commitment', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Add Commitment', exact: true }).click()
+    const commitmentDialog = page.getByRole('dialog', { name: 'Add Commitment' })
+    const typesResponse = await page.request.get(`/api/agreements/${target.agreementId}/commitments/lookups/types?limit=100`)
+    await expectOk(typesResponse, 'Read configured Commitment type label')
+    const types = await responseJson<{ items: Array<IdRow & { label_en: string }> }>(typesResponse)
+    const configuredType = types.items.find(item => String(item.id) === commitmentType)
+    expect(configuredType).toBeTruthy()
+    await commitmentDialog.getByRole('combobox', { name: /^Commitment type/ }).click()
+    const commitmentTypeOption = page.getByRole('option').filter({ hasText: configuredType!.label_en })
+    await commitmentTypeOption.click()
+    await expect(commitmentTypeOption).toBeHidden()
+    await expect(commitmentDialog.getByRole('combobox', { name: /^Commitment type/ })).toHaveAttribute('aria-expanded', 'false')
+    const declaredTotal = allocationPayload.budgetYears.reduce((sum, year) =>
+      shiftPaymentAuditMoney(sum, parseAutomatedPaymentMoney(year.program_funding)), '0.00')
+    const declaredAmount = commitmentDialog.getByRole('textbox', { name: /^Total amount/ })
+    await declaredAmount.click()
+    await expect(declaredAmount).toBeFocused()
+    await expect(declaredAmount).toHaveValue('')
+    await declaredAmount.fill(declaredTotal)
+    await expect(declaredAmount).toHaveValue(declaredTotal)
+    await declaredAmount.press('Tab')
     await commitmentDialog.getByRole('button', { name: 'Add', exact: true }).click()
     await expect(commitmentDialog).toBeHidden()
 
@@ -654,7 +700,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await completeEntity(page, 'fundingcaseagreementcommitment', commitmentId, 'Lifecycle test commitment completion.')
 
     const approvalPage = await browser.newPage()
-    await login(approvalPage, 'user11@example.com', 'password123')
+    await login(approvalPage, 'root@example.com', 'password123')
     await approveAllSteps(approvalPage, 'fundingcaseagreementcommitment', commitmentId)
 
     const approvedCommitmentResponse = await page.request.get(`/api/agreements/${target.agreementId}/commitments/${commitmentId}`)
@@ -664,7 +710,7 @@ test.describe.serial('Automated payment lifecycle', () => {
       egcs_fc_active: boolean
       lines: Array<IdRow & { egcs_fc_amount: number | string, fiscal_year_display: string }>
     }>(approvedCommitmentResponse)
-    expect(String(approvedCommitment.egcs_fc_status)).toBe(String(approvedStatusId))
+    expect(String(approvedCommitment.egcs_fc_status)).toBe(String(commitmentSuccessStatusId))
     expect(approvedCommitment.egcs_fc_active).toBe(true)
     expect(approvedCommitment.lines.length).toBeGreaterThan(0)
 
@@ -902,6 +948,13 @@ test.describe.serial('Automated payment lifecycle', () => {
     }
     expect(await readCapacity('lifecycle-03-draft-jv-has-no-effect', capacityBefore, junePaidBeforeJv)).toBe(capacityBefore)
     await completeEntity(page, 'fundingcasejournalvoucher', String(jv.id), 'Shared capacity service fixture.')
+    // Completion starts the current published financial authorization Workflow;
+    // pending approval contributes no signed coding capacity.
+    expect(await readCapacity()).toBe(capacityBefore)
+    await approveAllSteps(approvalPage, 'fundingcasejournalvoucher', String(jv.id))
+    const finalizedJv = await page.request.get(`/api/workflows/runtime?entityType=fundingcasejournalvoucher&entityId=${jv.id}&purpose=approval_submission`)
+    await expectOk(finalizedJv, 'Read finalized Journal Voucher authorization')
+    expect((await finalizedJv.json()).current.runtimeState).toBe('approved')
     expect(await readCapacity('lifecycle-04-successful-jv-frees-ten', shiftPaymentAuditMoney(capacityBefore, '10.00'), junePaidBeforeJv)).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
     const reversalResponse = await page.request.post(`/api/journal-vouchers/${jv.id}/reversal`, { data: {
       egcs_fc_requesteddate: '2026-10-01', egcs_fc_narrative_en: 'Restore the calculator baseline.',
@@ -911,6 +964,11 @@ test.describe.serial('Automated payment lifecycle', () => {
     const reversal = await responseJson<IdRow>(reversalResponse)
     expect(await readCapacity('lifecycle-05-draft-reversal-retains-jv', shiftPaymentAuditMoney(capacityBefore, '10.00'), junePaidBeforeJv)).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
     await completeEntity(page, 'fundingcasejournalvoucher', String(reversal.id), 'Restore shared capacity baseline.')
+    expect(await readCapacity()).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
+    await approveAllSteps(approvalPage, 'fundingcasejournalvoucher', String(reversal.id))
+    const finalizedReversal = await page.request.get(`/api/workflows/runtime?entityType=fundingcasejournalvoucher&entityId=${reversal.id}&purpose=approval_submission`)
+    await expectOk(finalizedReversal, 'Read finalized Journal Voucher reversal authorization')
+    expect((await finalizedReversal.json()).current.runtimeState).toBe('approved')
     expect(await readCapacity('lifecycle-06-successful-reversal-restores-baseline', capacityBefore, junePaidBeforeJv)).toBe(capacityBefore)
 
     // The accounting date is October (fiscal period six); earlier June totals retain their historical cutoff.
@@ -919,7 +977,14 @@ test.describe.serial('Automated payment lifecycle', () => {
     await recordCheckpoint({ scenario: 'lifecycle-07-before-october-correction', fiscalYearId, commitmentType, periodEnd: 6,
       calculation: calculationBeforeCorrection, expectedCommitmentCapacity: capacityBefore, note: 'October cutoff includes the later posted Correction; June cutoff retains its earlier paid totals.' })
     const allocationBeforeCorrection = await responseJson<unknown>(await page.request.get(`/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`))
-    const postedCorrection = await postNegativeCorrection(page, approvalPage, target, commitmentId, advancePaymentId)
+    const verificationPage = await browser.newPage()
+    let postedCorrection: Awaited<ReturnType<typeof postNegativeCorrection>>
+    try {
+      await login(verificationPage, 'user03@example.com', 'password123')
+      postedCorrection = await postNegativeCorrection(page, verificationPage, target, commitmentId, advancePaymentId)
+    } finally {
+      await verificationPage.close()
+    }
     const calculationAfterCorrection = await calculateAdvance(page, commitmentType, fiscalYearId, 6)
     await recordCheckpoint({ scenario: 'lifecycle-08-posted-negative-correction', fiscalYearId, commitmentType, periodEnd: 6,
       calculation: calculationAfterCorrection, expectedRecordedPaid: shiftPaymentAuditMoney(paidBeforeCorrection, '-1.00'),
@@ -942,6 +1007,10 @@ test.describe.serial('Automated payment lifecycle', () => {
     const replacement = await responseJson<IdRow>(replacementResponse)
     await expectOk(await page.request.patch(`/api/journal-vouchers/${replacement.id}`, { data: correctedAllocations }), 'Save replacement splits')
     await completeEntity(page, 'fundingcasejournalvoucher', String(replacement.id), 'Replacement capacity fixture.')
+    await approveAllSteps(approvalPage, 'fundingcasejournalvoucher', String(replacement.id))
+    const finalizedReplacement = await page.request.get(`/api/workflows/runtime?entityType=fundingcasejournalvoucher&entityId=${replacement.id}&purpose=approval_submission`)
+    await expectOk(finalizedReplacement, 'Read finalized replacement Journal Voucher authorization')
+    expect((await finalizedReplacement.json()).current.runtimeState).toBe('approved')
     const payableCapacity = addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityAfterCorrection), parseAutomatedPaymentMoney('10.00'))
     expect(await readCapacity('lifecycle-10-successful-replacement', shiftPaymentAuditMoney(capacityBefore, '11.00'), junePaidBeforeJv)).toBe(payableCapacity)
     await expectOk(await page.request.patch(`/api/extensions/streams/${target.streamId}`, { data: {
@@ -986,14 +1055,35 @@ test.describe.serial('Automated payment lifecycle', () => {
     )
     expect([400, 404]).toContain(malformedResponse.status())
 
+    const token = Date.now(), email = `unassigned-payment-${token}@example.com`
+    const actorResponse = await page.request.post('/api/users', { data: { name: `Unassigned Payment ${token}`, email } })
+    await expectOk(actorResponse, 'Create unassigned Payment actor')
+    const actorId = String((await responseJson<IdRow>(actorResponse)).id)
+    let roleId: string | null = null
     const unassignedPage = await browser.newPage()
-    await login(unassignedPage, 'user11@example.com', 'password123')
-    const forbiddenResponse = await unassignedPage.request.post(
-      `/api/extensions/${AUTOMATED_PAYMENTS_EXTENSION_KEY}/agreements/${target.agreementId}/calculate-payment`,
-      { data: {} }
-    )
-    expect(forbiddenResponse.status()).toBe(403)
-    await unassignedPage.close()
+    try {
+      await expectOk(await page.request.post(`/api/users/${actorId}/activate`, { data: { password: 'disposable-password-123' } }), 'Activate unassigned Payment actor')
+      const roleResponse = await page.request.post('/api/roles', { data: {
+        name_en: `Payment contributor ${token}`, name_fr: `Collaborateur de paiement ${token}`,
+        agency_id: target.agencyId, transfer_payment_ids: [],
+        permissions: [{ subject: 'agreement', access_level: 'contributor' }]
+      } })
+      await expectOk(roleResponse, 'Create Payment Contributor grant')
+      roleId = String((await responseJson<IdRow>(roleResponse)).id)
+      await expectOk(await page.request.post(`/api/users/${actorId}/assignments`, { data: { user_id: actorId, role_id: roleId } }), 'Assign Payment Contributor grant')
+      await login(unassignedPage, email, 'disposable-password-123')
+      const permissions = await responseJson<{ grants: Array<{ action: string; subject: string }> }>(await unassignedPage.request.get('/api/auth/permissions'))
+      expect(permissions.grants).toContainEqual(expect.objectContaining({ action: 'update', subject: 'agreement' }))
+      const forbiddenResponse = await unassignedPage.request.post(
+        `/api/extensions/${AUTOMATED_PAYMENTS_EXTENSION_KEY}/agreements/${target.agreementId}/calculate-payment`,
+        { data: {} }
+      )
+      expect(forbiddenResponse.status()).toBe(403)
+    } finally {
+      await unassignedPage.close()
+      await expectOk(await page.request.delete(`/api/users/${actorId}`), 'Delete unassigned Payment actor')
+      if (roleId) await expectOk(await page.request.delete(`/api/roles/${roleId}`), 'Delete Payment Contributor grant')
+    }
 
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto(`/fr/ententes/${target.agreementId}`)
@@ -1021,7 +1111,7 @@ test.describe.serial('Automated payment lifecycle', () => {
 
     const agreementResponse = await page.request.get(`/api/agreements/${target.agreementId}`)
     await expectOk(agreementResponse, 'Resolve automated-payment stream program')
-    const agreement = await responseJson<{ program_id: string }>(agreementResponse)
+    const agreement = await responseJson<{ program_id: string; egcs_fc_authorizedassistancestartdate: string; egcs_fc_authorizedassistanceenddate: string }>(agreementResponse)
 
     const basesResponse = await page.request.get(
       `/api/transfer-payments/${agreement.program_id}/streams/${target.streamId}/holdback-bases?page=1&limit=20`

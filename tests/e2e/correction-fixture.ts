@@ -1,4 +1,4 @@
-import { expect, type APIResponse, type Page } from '@playwright/test'
+import { expect, test, type APIResponse, type Page } from '@playwright/test'
 
 type Owner = { agencyId: string; agreementId: string; programId: string; streamId: string }
 type Id = { id: string }
@@ -26,7 +26,7 @@ export const postNegativeCorrection = async (
 ): Promise<Correction> => {
   const users = await json<{ items: Array<{ id: string; egcs_cn_email: string }> }>(await page.request.get('/api/users/lookups?status=active&limit=100'))
   const creator = users.items.find(user => user.egcs_cn_email === 'root@example.com')!
-  const verifier = users.items.find(user => user.egcs_cn_email === 'user11@example.com')!
+  const verifier = users.items.find(user => user.egcs_cn_email === 'user03@example.com')!
   expect(creator).toBeTruthy()
   expect(verifier).toBeTruthy()
   const token = `${paymentId}-${Date.now()}`
@@ -94,20 +94,53 @@ export const postNegativeCorrection = async (
     egcs_cn_failurestatus: failure, egcs_cn_successstatus: success, owners: []
   } }), 'Configure terminal Correction approval route')
   await ok(await page.request.post(`${agencyBase}/workflows/${workflow.id}/publish`), 'Publish Correction workflow')
-  await ok(await page.request.post(`/api/transfer-payments/${owner.programId}/streams/${owner.streamId}/workflows`, { data: { egcs_tp_workflow: workflow.id } }), 'Link Correction workflow')
-  await ok(await page.request.post('/api/completions/complete', { data: { entityType: 'fundingcasecorrection', entityId: id } }), 'Complete required Correction submission')
-  type Step = { id: string; can_action: boolean; certifications: Array<{ id: string }> }
-  const runtime = await json<{ routingSlips?: Array<{ steps: Step[] }>; steps?: Step[] }>(
-    await approver.request.get(`/api/approvals/runtime?entityType=fundingcasecorrection&entityId=${id}`))
-  const step = (runtime.routingSlips?.flatMap(slip => slip.steps) ?? runtime.steps ?? []).find(item => item.can_action)!
-  expect(step).toBeTruthy()
-  await ok(await approver.request.post('/api/approvals/approve', { data: {
-    approvalId: step.id, certifications: step.certifications.map(certification => ({ id: certification.id, egcs_cn_value: true }))
-  } }), 'Post Correction through its assigned terminal approval')
-  const posted = await json<Correction>(await page.request.get(correctionUrl))
-  expect(posted.egcs_fc_outcome).toBe('posted')
-  expect(await json(await page.request.get(paymentUrl))).toEqual(paymentBefore)
-  expect((await json<{ payments: Id[] }>(await page.request.get(`/api/agreements/${owner.agreementId}/payments-overview`))).payments.map(payment => payment.id).sort()).toEqual(paymentIdsBefore)
-  expect([403, 409]).toContain((await page.request.patch(correctionUrl, { data: { ...signedEdit, egcs_fc_narrative_en: 'Cannot alter terminal evidence.' } })).status())
-  return posted
+  const linksUrl = `/api/transfer-payments/${owner.programId}/streams/${owner.streamId}/workflows`
+  const linksResponse = await page.request.get(linksUrl)
+  await ok(linksResponse, 'Read current Correction workflow links')
+  const previous = (await json<{ items: Array<{ id: string; egcs_tp_workflow: string; egcs_cn_entitytype: string; egcs_cn_purpose: string }> }>(linksResponse)).items
+    .filter(link => link.egcs_cn_entitytype === 'fundingcasecorrection' && link.egcs_cn_purpose === 'approval_submission')
+  const removed: typeof previous = []
+  let ownedLinkId: string | undefined
+  let failed = true
+  try {
+    // The current Stream permits one approval submission per entity type.
+    // Temporarily replace its link with the independent verifier's publication;
+    // submitted financial evidence keeps its immutable publication afterward.
+    for (const link of previous) {
+      await ok(await page.request.delete(`${linksUrl}/${link.id}`), 'Unlink original Correction workflow for owned verifier fixture')
+      removed.push(link)
+    }
+    const ownedLink = await page.request.post(linksUrl, { data: { egcs_tp_workflow: workflow.id } })
+    await ok(ownedLink, 'Link independent Correction verifier workflow')
+    ownedLinkId = (await json<Id>(ownedLink)).id
+    await ok(await page.request.post('/api/completions/complete', { data: { entityType: 'fundingcasecorrection', entityId: id } }), 'Complete required Correction submission')
+    type Step = { id: string; can_action: boolean; certifications: Array<{ id: string }> }
+    const runtime = await json<{ routingSlips?: Array<{ steps: Step[] }>; steps?: Step[] }>(
+      await approver.request.get(`/api/approvals/runtime?entityType=fundingcasecorrection&entityId=${id}`))
+    const step = (runtime.routingSlips?.flatMap(slip => slip.steps) ?? runtime.steps ?? []).find(item => item.can_action)!
+    expect(step).toBeTruthy()
+    await ok(await approver.request.post('/api/approvals/approve', { data: {
+      approvalId: step.id, certifications: step.certifications.map(certification => ({ id: certification.id, egcs_cn_value: true }))
+    } }), 'Post Correction through its assigned terminal approval')
+    const posted = await json<Correction>(await page.request.get(correctionUrl))
+    expect(posted.egcs_fc_outcome).toBe('posted')
+    expect(await json(await page.request.get(paymentUrl))).toEqual(paymentBefore)
+    expect((await json<{ payments: Id[] }>(await page.request.get(`/api/agreements/${owner.agreementId}/payments-overview`))).payments.map(payment => payment.id).sort()).toEqual(paymentIdsBefore)
+    expect([403, 409]).toContain((await page.request.patch(correctionUrl, { data: { ...signedEdit, egcs_fc_narrative_en: 'Cannot alter terminal evidence.' } })).status())
+    failed = false
+    return posted
+  } finally {
+    const cleanupErrors: unknown[] = []
+    const restore = async (label: string, operation: () => Promise<APIResponse>) => {
+      try { await ok(await operation(), label) }
+      catch (error) { cleanupErrors.push(error) }
+    }
+    if (ownedLinkId) await restore('Unlink owned Correction verifier workflow', async () => await page.request.delete(`${linksUrl}/${ownedLinkId}`))
+    for (const link of removed) await restore('Restore original Correction workflow membership', async () =>
+      await page.request.post(linksUrl, { data: { egcs_tp_workflow: link.egcs_tp_workflow } }))
+    if (cleanupErrors.length) {
+      if (!failed) throw new AggregateError(cleanupErrors, 'Correction fixture workflow restoration failed')
+      for (const error of cleanupErrors) test.info().annotations.push({ type: 'cleanup failure', description: String(error) })
+    }
+  }
 }

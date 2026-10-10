@@ -257,7 +257,7 @@ export const preparePaymentAuditFixture = async (
   const proponentTypes = await items(page, `/api/agreements/lookups/proponent-types?stream_id=${owner.streamId}&proponent_id=${recipient.id}`)
   expect(proponentTypes.length, 'A recipient compatible with the authored stream subtype').toBeGreaterThan(0)
   const agreementInput = {
-    egcs_fc_agreementnumber: `MATH-${token.slice(-10)}`, egcs_fc_transferpaymentstream: owner.streamId,
+    egcs_fc_agreementnumber: `MATH-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`, egcs_fc_transferpaymentstream: owner.streamId,
     egcs_fc_currency: 'cad',
     egcs_fc_financialsystemnumber: Number(token.slice(-9)), egcs_fc_customfields: {},
     egcs_fc_title_en: `Payment arithmetic ${token}`, egcs_fc_title_fr: `Calcul des paiements ${token}`,
@@ -434,7 +434,13 @@ export const runPaymentAccuracyJourney = async (
     }
     if (cents(release) > BigInt(0)) {
       await dialog.getByRole('checkbox').check()
-      await dialog.getByRole('textbox', { name: /Holdback release amount/i }).fill(release)
+      const releaseAmount = dialog.getByRole('textbox', { name: /Holdback release amount/i })
+      await releaseAmount.click()
+      await expect(releaseAmount).toBeFocused()
+      await expect(releaseAmount).toHaveValue('')
+      await releaseAmount.fill(release)
+      await expect(releaseAmount).toHaveValue(release)
+      await releaseAmount.press('Tab')
     }
     const amount = dialog.getByRole('textbox', { name: /^Amount/ })
     const renderedAmount = async () => (await amount.inputValue()).replace(/[^\d.-]/g, '')
@@ -445,6 +451,7 @@ export const runPaymentAccuracyJourney = async (
       const requestsBeforeAmount = calculatorRequests
       // Focus swaps the formatted currency display for its editable decimal draft.
       await amount.click()
+      await expect(amount).toBeFocused()
       await expect(amount).toHaveValue(expected)
       await amount.fill('')
       await expect(amount).toHaveValue('')
@@ -463,6 +470,7 @@ export const runPaymentAccuracyJourney = async (
       }
       await expect(amount).toHaveValue('')
       await amount.click()
+      await expect(amount).toBeFocused()
       await expect(amount).toHaveValue('')
       await amount.fill(override)
       await expect(amount).toHaveValue(override)
@@ -494,7 +502,7 @@ export const runPaymentAccuracyJourney = async (
     await expect(page.getByRole('heading', { level: 2, name: 'Payment calculation', exact: true })).toHaveCount(1)
     await expect(retained.getByRole('heading', { level: 3, name: 'Calculation details', exact: true })).toHaveCount(1)
     await expect(page.getByTestId('detail-section')).toHaveAttribute('data-section-width', 'full')
-    await expect(page.getByTestId('detail-section')).toHaveClass(/max-w-4xl/)
+    expect(await page.getByTestId('detail-section').evaluate(section => getComputedStyle(section).maxWidth)).toBe('none')
     if (scenario === '01_initial_advance') {
       const bookmark = new URL(page.url())
       bookmark.searchParams.set('trace', 'evidence')

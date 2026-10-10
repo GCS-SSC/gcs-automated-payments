@@ -1,5 +1,6 @@
 import { sql, type Kysely } from 'kysely'
 import type { GcsExtensionAgreementFinancials } from '@gcs-ssc/extensions/server'
+import { isGcsExtensionUserError } from '@gcs-ssc/extensions/server'
 import {
   EXTENSION_KEY, AutomatedPaymentCurrencySchema, ZERO_AUTOMATED_PAYMENT_MONEY,
   parseAutomatedPaymentExtensionPayload, parseAutomatedPaymentsStreamConfig,
@@ -127,6 +128,11 @@ export const calculateAutomatedPaymentFromDb = async (
     releaseHoldback: input.releaseHoldback,
     holdbackReleaseAmount: input.holdbackReleaseAmount === undefined ? undefined : parseAutomatedPaymentMoney(input.holdbackReleaseAmount),
     ...(input.excludePaymentId ? { excludePaymentId: input.excludePaymentId } : {})
+  }).catch((error: unknown) => {
+    if (isGcsExtensionUserError(error) && error.code === 'AGREEMENT_CURRENCY_MISMATCH') {
+      throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', 'egcs_fc_currency')
+    }
+    throw error
   })
   const amount = (value: string) => parseAutomatedPaymentAggregateMoney(value)
   const labels = ['baseAmount', 'commitmentRemaining', 'availableBeforeHoldback', 'holdbackReleaseAmount',

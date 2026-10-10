@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createGcsExtensionUserError } from '@gcs-ssc/extensions/server'
 import { calculateAutomatedPaymentFromDb, getPaymentMetadata, getPaymentCalculationEvidence, savePaymentMetadata, lockAutomatedPaymentAgreement } from '../../server/calculation-data'
 
 const input = { agreementId: '1', commitmentType: '2', fiscalYearId: '3', paymentType: 'advance' as const, periodEnd: 4, currency: 'usd' }
@@ -45,9 +46,25 @@ describe('host-owned calculation consumption and retained evidence', () => {
     expect(await calculateAutomatedPaymentFromDb({} as never, input, { enabledPaymentTypes: ['reimbursement'] }, financials)).toMatchObject({ enabled: false, currency: 'USD', details: [] })
     expect(financials.getPaymentCalculation).not.toHaveBeenCalled()
   })
-  it('propagates host authorization, currency and financial-source failures without local fallback', async () => {
+  it('propagates host authorization and financial-source failures without local fallback', async () => {
     const financials = { getPaymentCalculation: vi.fn(async () => { throw new Error('revoked') }) }
     await expect(calculateAutomatedPaymentFromDb({} as never, input, {}, financials)).rejects.toThrow('revoked')
+  })
+  it('translates only the structured host denomination conflict into its localized field error', async () => {
+    const financials = { getPaymentCalculation: vi.fn().mockRejectedValue(createGcsExtensionUserError({
+      code: 'AGREEMENT_CURRENCY_MISMATCH', message: 'Bound currency conflict'
+    })) }
+    await expect(calculateAutomatedPaymentFromDb({} as never, input, {}, financials)).rejects.toMatchObject({
+      code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', statusCode: 400,
+      localizedMessage: { en: expect.any(String), fr: expect.any(String) },
+      details: [expect.objectContaining({ path: 'egcs_fc_currency' })]
+    })
+    const forbidden = createGcsExtensionUserError({ code: 'FORBIDDEN', statusCode: 403, message: 'revoked' })
+    financials.getPaymentCalculation.mockRejectedValueOnce(forbidden)
+    await expect(calculateAutomatedPaymentFromDb({} as never, input, {}, financials)).rejects.toBe(forbidden)
+    const unstructured = new Error('The selected currency must match the bound Agreement currency.')
+    financials.getPaymentCalculation.mockRejectedValueOnce(unstructured)
+    await expect(calculateAutomatedPaymentFromDb({} as never, input, {}, financials)).rejects.toBe(unstructured)
   })
   it('rejects invalid release input before invoking the host', async () => {
     const financials = { getPaymentCalculation: vi.fn() }

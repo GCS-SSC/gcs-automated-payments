@@ -115,7 +115,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
   const usdLinkedChart = await post(page, `${streamBase}/chart-of-accounts`, { egcs_tp_agencychartofaccount: usdChart.id })
   const usdCreation = await createNativeAgreementThroughUi(page, testInfo, owner.programId, {
     ...fixture.agreementInput, egcs_fc_currency: 'usd',
-    egcs_fc_agreementnumber: fixture.agreementInput.egcs_fc_agreementnumber.replace(/^MATH-/, 'USD-'),
+    egcs_fc_agreementnumber: `USD-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`,
     egcs_fc_financialsystemnumber: fixture.agreementInput.egcs_fc_financialsystemnumber + 1,
     egcs_fc_title_en: `USD ${fixture.agreementInput.egcs_fc_title_en}`,
     egcs_fc_title_fr: `USD ${fixture.agreementInput.egcs_fc_title_fr}`
@@ -211,7 +211,13 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       await expect(dialog.getByRole('combobox', { name: /^Currency/ })).toBeDisabled()
       await expect(dialog.getByRole('combobox', { name: /^Currency/ })).toHaveText(currencyLabel(currency))
       await choose(dialog, /^Commitment type/, /Commitment/)
-      await dialog.getByRole('textbox', { name: /^Amount/ }).fill(budgets[currency])
+      const commitmentAmount = dialog.getByRole('textbox', { name: /^Total amount/ })
+      await commitmentAmount.click()
+      await expect(commitmentAmount).toBeFocused()
+      await expect(commitmentAmount).toHaveValue('')
+      await commitmentAmount.fill(budgets[currency])
+      await expect(commitmentAmount).toHaveValue(budgets[currency])
+      await commitmentAmount.press('Tab')
       const response = page.waitForResponse(candidate => candidate.request().method() === 'POST' && candidate.url().endsWith(`${agreementBase}/commitments`))
       await dialog.getByRole('button', { name: 'Add', exact: true }).click()
       const created = await (await response).json() as Row
@@ -230,7 +236,13 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       const codingResponse = await read<{ items: Row[] }>(page, `${agreementBase}/commitment-lines/lookups/chart-of-accounts?permission_action=update&commitmentId=${created.id}&currency=${currency}&limit=100`)
       expect(codingResponse.items.map(row => row.id)).toEqual([currency === 'cad' ? linkedChart.id : usdLinkedChart.id])
       await choose(lineDialog, /^Stream commitment/, new RegExp(String(codingResponse.items[0]!.label_en).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
-      await lineDialog.getByRole('textbox', { name: /^Amount/ }).fill(budgets[currency])
+      const lineAmount = lineDialog.getByRole('textbox', { name: /^Amount/ })
+      await lineAmount.click()
+      await expect(lineAmount).toBeFocused()
+      await expect(lineAmount).toHaveValue('')
+      await lineAmount.fill(budgets[currency])
+      await expect(lineAmount).toHaveValue(budgets[currency])
+      await lineAmount.press('Tab')
       await lineDialog.getByRole('button', { name: 'Add', exact: true }).click()
       await expect(lineDialog).toBeHidden()
       const detail = await read<Row & { lines: Row[] }>(page, `${agreementBase}/commitments/${created.id}`)
@@ -248,11 +260,21 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
         egcs_fc_amount: '0.01'
       } })
       expect(overNativeLimit.status()).toBe(400)
-      expect((await overNativeLimit.json()).data.code).toBe('AGREEMENT_COMMITMENT_EXCEEDS_PROGRAM_FUNDING')
+      expect((await overNativeLimit.json()).data.code).toBe('AGREEMENT_COMMITMENT_EXCEEDS_TOTAL')
       expect((await read<Row & { lines: Row[] }>(page, `${agreementBase}/commitments/${created.id}`)).lines).toHaveLength(1)
+      // The header checks native Program funding without the earlier declared-total line guard.
+      const beforeFundingProbe = await read(page, `${agreementBase}/commitments-overview`)
+      const overNativeFunding = await page.request.post(`${agreementBase}/commitments`, { data: {
+        egcs_fc_type: created.egcs_fc_type, egcs_fc_currency: currency,
+        egcs_fc_totalamount: amount(cents(budgets[currency]) + BigInt(1))
+      } })
+      expect(overNativeFunding.status()).toBe(400)
+      expect((await overNativeFunding.json()).data.code).toBe('AGREEMENT_COMMITMENT_EXCEEDS_PROGRAM_FUNDING')
+      expect(await read(page, `${agreementBase}/commitments-overview`)).toEqual(beforeFundingProbe)
       raw.push({ boundary: 'commitment-native-currency-and-limit', currency, commitment: detail,
         wrong_chart_id: currency === 'cad' ? usdLinkedChart.id : linkedChart.id,
         rejected_wrong_chart_status: wrongCoding.status(), rejected_over_limit_status: overNativeLimit.status(),
+        rejected_over_native_funding_status: overNativeFunding.status(),
         native_maximum: budgets[currency], rejected_extra_amount: '0.01' })
       record(currency, 'commitment', detail.lines[0]!.id, '', budgets[currency])
       await complete('fundingcaseagreementcommitment', created.id)
@@ -348,7 +370,13 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       await choose(dialog, /^Period end/, ['Apr', 'May', 'Jun'][periodEnd]!)
       if (cents(release) > BigInt(0)) {
         await dialog.getByRole('checkbox').check()
-        await dialog.getByRole('textbox', { name: /Holdback release amount/i }).fill(release)
+        const releaseAmount = dialog.getByRole('textbox', { name: /Holdback release amount/i })
+        await releaseAmount.click()
+        await expect(releaseAmount).toBeFocused()
+        await expect(releaseAmount).toHaveValue('')
+        await releaseAmount.fill(release)
+        await expect(releaseAmount).toHaveValue(release)
+        await releaseAmount.press('Tab')
       }
       await expect.poll(async () => (await dialog.getByRole('textbox', { name: /^Amount/ }).inputValue()).replace(/[^\d.-]/g, '')).toBe(expected)
       await expect(currencyControl).toHaveText(currencyLabel(currency))

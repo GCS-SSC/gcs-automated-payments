@@ -7,6 +7,10 @@ Commitment selection, approved Credit Memo effects, Claim reductions and holdbac
 The extension controls enabled payment types and the release election; it never
 falls back to its own financial calculation when the SDK is unavailable.
 
+The calculator translates the host's structured `AGREEMENT_CURRENCY_MISMATCH`
+into its bilingual `GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH` field error with
+status 400. Authorization and other financial-source failures remain unchanged.
+
 The SDK receives the stable Agreement fiscal-year ID, Agency Commitment type,
 Payment type, selected fiscal end month, native currency, optional holdback release
 and optional same-Agreement Payment exclusion. Its eight exact values are base
