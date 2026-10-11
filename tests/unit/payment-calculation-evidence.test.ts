@@ -7,7 +7,7 @@ import extension from '../../extension.config'
 
 const evidence = { version: 1, capturedAt: '2026-10-09T12:00:00.000Z',
   input: { fiscalYearId: '3', commitmentTypeId: '2', paymentType: 'advance', periodEnd: 4, currency: 'usd' },
-  calculation: { enabled: true, currency: 'USD', baseAmount: '100.01', ceilingAmount: '90.00', suggestedAmount: '90.00', holdbackAmount: '10.00', holdbackReleaseAmount: '0.00', availableBeforeHoldback: '90.00', details: [{ label: 'baseAmount', value: '100.01' }, { label: 'commitmentRemaining', value: '199999999999999999.98' }, { label: 'totalPaymentsToDate', value: '-0.01' }] } }
+  calculation: { enabled: true, currency: 'USD', baseAmount: '100.01', ceilingAmount: '90.00', suggestedAmount: '90.00', holdbackAmount: '10.00', holdbackReleaseAmount: '0.00', availableBeforeHoldback: '90.00', details: [{ label: 'baseAmount', value: '100.01' }, { label: 'commitmentRemaining', value: '199999999999999999.98' }, { label: 'totalPaymentsToDate', value: '-0.01' }, { label: 'totalCreditMemos', value: '1000.00' }, { label: 'totalCreditMemosForPayment', value: '500.00' }] } }
 const context = (ownerId = '90') => ({ target: 'payment' as const, ownerId, ownerType: 'fundingcasepayment' as const, agreementId: '1', agencyId: '2', scope: { type: 'agency' as const, agencyId: '2' } })
 const render = () => mount(PaymentCalculationEvidence, { props: { extensionKey: 'gcs-automated-payments', context: context(), config: {}, rbac: { subject: 'agreement', action: 'read' } }, global: { stubs: {
   CommonSection: defineComponent({ props: ['title'], setup(props, { slots }) { return () => h('section', [h('h3', props.title as string), slots.default?.()]) } }),
@@ -26,6 +26,8 @@ describe('retained Payment calculation view', () => {
     expect(wrapper.find('[role="status"]').exists()).toBe(true)
     await flushPromises()
     expect(wrapper.text()).toContain('Base amount')
+    expect(wrapper.text()).toContain('Credit memos')
+    expect(wrapper.text()).toContain('Eligible credit memos')
     expect(wrapper.get('h3').text()).toBe('Calculation details')
     expect(wrapper.find('h2').exists()).toBe(false)
     expect(wrapper.get('[data-testid="payment-calculation-evidence"]').classes()).not.toContain('max-w-4xl')
@@ -41,6 +43,8 @@ describe('retained Payment calculation view', () => {
     locale.value = 'fr'
     await flushPromises()
     expect(wrapper.text()).toContain('Montant de base')
+    expect(wrapper.text()).toContain('Notes de crédit')
+    expect(wrapper.text()).toContain('Notes de crédit admissibles')
     expect(wrapper.findAll('dd')[1]!.text().replace(/[^\d,]/g, '')).toBe('199999999999999999,98')
     expect(wrapper.findAll('dd')[1]!.classes()).toContain('wrap-anywhere')
     expect(wrapper.get('h3').text()).toBe('Détails du calcul')
@@ -53,6 +57,23 @@ describe('retained Payment calculation view', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('No calculation was retained')
     expect(wrapper.find('dl').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('labels the current reconciled-period credit result separately from the older eligible-credit policy', async () => {
+    const locale = ref('en')
+    vi.stubGlobal('useI18n', () => ({ locale, t: () => { throw new Error('Host translation lookup is unavailable') } }))
+    const snapshot = { ...evidence, input: { ...evidence.input, periodStart: 1 },
+      calculation: { ...evidence.calculation, details: evidence.calculation.details.map(detail =>
+        detail.label === 'totalCreditMemosForPayment' ? { ...detail, label: 'totalCreditMemosForReconciledPeriods' } : detail) } }
+    vi.stubGlobal('fetch', vi.fn(async () => response(snapshot)))
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Credit memos for reconciled periods')
+    expect(wrapper.text()).not.toContain('Eligible credit memos')
+    locale.value = 'fr'
+    await flushPromises()
+    expect(wrapper.text()).toContain('Notes de crédit des périodes rapprochées')
+    expect(wrapper.text()).not.toContain('Notes de crédit admissibles')
     wrapper.unmount()
   })
   it('offers retry after read failure and then displays the same retained calculation', async () => {

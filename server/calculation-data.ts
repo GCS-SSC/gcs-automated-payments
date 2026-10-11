@@ -3,12 +3,14 @@ import type { GcsExtensionAgreementFinancials } from '@gcs-ssc/extensions/server
 import { isGcsExtensionUserError } from '@gcs-ssc/extensions/server'
 import {
   EXTENSION_KEY, AutomatedPaymentCurrencySchema, ZERO_AUTOMATED_PAYMENT_MONEY,
+  AutomatedPaymentsAgencyConfigSchema,
   parseAutomatedPaymentExtensionPayload, parseAutomatedPaymentsStreamConfig,
-  parseAutomatedPaymentAggregateMoney, parseAutomatedPaymentMoney,
+  parseAutomatedPaymentMoney,
   type AutomatedPaymentMoney, type AutomatedPaymentMoneyInput, type AutomatedPaymentCalculationResult
 } from '../shared/automated-payments.ts'
 import { AutomatedPaymentCalculationEvidenceSchema, type AutomatedPaymentCalculationEvidence } from '../shared/automated-payments.ts'
-import { createAutomatedPaymentUserError } from './errors'
+import { calculateAutomatedPaymentValues } from './payment-calculation.ts'
+import { createAutomatedPaymentUserError } from './errors.ts'
 
 type Db = Kysely<Record<string, Record<string, unknown>>>
 const PAYMENT_METADATA_KEY = 'payment-metadata'
@@ -19,6 +21,7 @@ export interface AutomatedPaymentServerInput {
   commitmentType: string
   fiscalYearId: string
   paymentType: 'reimbursement' | 'advance'
+  periodStart: number
   periodEnd: number
   submittedAmount?: AutomatedPaymentMoneyInput
   releaseHoldback?: boolean
@@ -108,12 +111,13 @@ export const getPaymentCalculationEvidence = async (db: Db, paymentId: string): 
   return parsed.data
 }
 
-/** Consumes host-owned financial inputs; the extension owns only its activation and presentation. */
+/** Consumes host-owned financial inputs; the extension owns entitlement, holdback and ceiling arithmetic. */
 export const calculateAutomatedPaymentFromDb = async (
   _db: Db,
   input: AutomatedPaymentServerInput,
   streamConfig: unknown,
-  agreementFinancials: Pick<GcsExtensionAgreementFinancials, 'getPaymentCalculation'>
+  agreementFinancials: Pick<GcsExtensionAgreementFinancials, 'getPaymentCalculation'>,
+  agencyConfig: unknown
 ): Promise<AutomatedPaymentServerCalculation> => {
   const currency = AutomatedPaymentCurrencySchema.parse(input.currency)
   if (!parseAutomatedPaymentsStreamConfig(streamConfig).enabledPaymentTypes.includes(input.paymentType)) {
@@ -122,9 +126,13 @@ export const calculateAutomatedPaymentFromDb = async (
       holdbackReleaseAmount: ZERO_AUTOMATED_PAYMENT_MONEY, availableBeforeHoldback: ZERO_AUTOMATED_PAYMENT_MONEY,
       currency: currency.toUpperCase(), details: [] }
   }
+  const settings = AutomatedPaymentsAgencyConfigSchema.safeParse(agencyConfig)
+  if (!settings.success) {
+    throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_CREDIT_MEMO_BASIS_REQUIRED', 'creditMemoBasis')
+  }
   const result = await agreementFinancials.getPaymentCalculation({
     currency, fiscalYearId: input.fiscalYearId, commitmentTypeId: input.commitmentType,
-    paymentType: input.paymentType, periodEnd: input.periodEnd,
+    paymentType: input.paymentType, periodStart: input.periodStart, periodEnd: input.periodEnd,
     releaseHoldback: input.releaseHoldback,
     holdbackReleaseAmount: input.holdbackReleaseAmount === undefined ? undefined : parseAutomatedPaymentMoney(input.holdbackReleaseAmount),
     ...(input.excludePaymentId ? { excludePaymentId: input.excludePaymentId } : {})
@@ -134,11 +142,5 @@ export const calculateAutomatedPaymentFromDb = async (
     }
     throw error
   })
-  const amount = (value: string) => parseAutomatedPaymentAggregateMoney(value)
-  const labels = ['baseAmount', 'commitmentRemaining', 'availableBeforeHoldback', 'holdbackReleaseAmount',
-    'totalClaimsToLastClaimMonth', 'totalForecastToLastClaimMonth', 'totalForecastToPeriodEnd', 'totalPaymentsToDate'] as const
-  return { enabled: true, baseAmount: amount(result.baseAmount), ceilingAmount: amount(result.ceilingAmount),
-    suggestedAmount: amount(result.suggestedAmount), holdbackAmount: amount(result.holdbackAmount),
-    holdbackReleaseAmount: amount(result.holdbackReleaseAmount), availableBeforeHoldback: amount(result.availableBeforeHoldback),
-    currency: result.currency.toUpperCase(), details: labels.map(label => ({ label, value: amount(result[label]) })) }
+  return { enabled: true, ...calculateAutomatedPaymentValues(result, input, settings.data.creditMemoBasis) }
 }

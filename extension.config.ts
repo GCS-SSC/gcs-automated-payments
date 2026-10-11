@@ -4,9 +4,10 @@ export default defineGcsExtension({
   // Host-managed configuration, KV and secrets keep their host ownership rules.
   auditOwnership: defineGcsAuditOwnership([]),
   key: 'gcs-automated-payments',
-  sdkVersion: '^0.3.10',
+  sdkVersion: '^0.3.13',
   requiredHostCapabilities: [
     'audit-ownership',
+    'agency-config',
     'stream-config-modal',
     'payment-amount-calculators',
     'entity-tabs',
@@ -28,6 +29,9 @@ export default defineGcsExtension({
     fr: 'Calcule les plafonds de paiement des ententes a partir des reclamations, previsions, paiements precedents, engagements et retenues.'
   },
   admin: {
+    agency: {
+      path: './components/AgencyAutomatedPaymentsConfig.vue'
+    },
     streamConfig: {
       path: './components/StreamAutomatedPaymentsConfig.vue'
     }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GcsExtensionRouteEvent } from '@gcs-ssc/extensions/server'
 
+const agencyConfig = { creditMemoBasis: 'all' }
 const readBodyMock = vi.fn()
 const calculateAutomatedPaymentFromDbMock = vi.fn()
 const financials = { getPaymentCalculation: vi.fn(), getClaimRecoveryProjection:vi.fn(), getRecordedPaidToDate: vi.fn(), getPaidAccountingProjection: vi.fn(), getCommitmentPaymentCapacity: vi.fn(), getCommitmentLinePaymentCoverage: vi.fn(), validatePaymentAllocations: vi.fn() }
@@ -126,7 +127,7 @@ describe('gcs automated payments calculation route', () => {
     await expect(handler(createRouteEvent({
       params: { agreementId: 'agreement-1' },
       $db: db,
-      gcsExtension: { config: streamConfig, agreementFinancials: financials }
+      gcsExtension: { agencyConfig, config: streamConfig, agreementFinancials: financials }
     }))).resolves.toBe(result)
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(db, {
       agreementId: 'agreement-1',
@@ -134,20 +135,21 @@ describe('gcs automated payments calculation route', () => {
       commitmentType: validCommitmentTypeId,
       fiscalYearId: validFiscalYearId,
       paymentType: 'advance',
+      periodStart: 1,
       periodEnd: 3,
       submittedAmount: '90.50',
       releaseHoldback: true,
       holdbackReleaseAmount: '5.25'
-    }, streamConfig, financials)
+    }, streamConfig, financials, agencyConfig)
   })
 
   it('passes explicit USD through the public route and retains the calculator currency', async () => {
     readBodyMock.mockResolvedValueOnce({ ...validBody, egcs_fc_currency: 'usd' })
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({ currency: 'USD', ceilingAmount: '90.00' })
     const handler = (await import('../../server/api/calculate-payment.post')).default
-    await expect(handler(createRouteEvent({ params: { agreementId: '1' }, $db: {}, gcsExtension: { config: {}, agreementFinancials: financials } })))
+    await expect(handler(createRouteEvent({ params: { agreementId: '1' }, $db: {}, gcsExtension: { agencyConfig, config: {}, agreementFinancials: financials } })))
       .resolves.toMatchObject({ currency: 'USD', ceilingAmount: '90.00' })
-    expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ currency: 'usd' }), expect.anything(), financials)
+    expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ currency: 'usd' }), expect.anything(), financials, agencyConfig)
   })
 
   it.each(['', 'USD', 'usd,cad', ['usd', 'cad'], 123, null])('rejects invalid currency %j before source access', async currency => {

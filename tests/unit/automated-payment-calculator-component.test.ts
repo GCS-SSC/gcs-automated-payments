@@ -129,9 +129,10 @@ describe('automated payment amount calculator', () => {
   })
 
   it('renders calculation details with readable labels in an accordion', async () => {
+    const locale = ref('en')
     vi.stubGlobal('useI18n', () => ({
-      t: (key: string) => messages[key] ?? key,
-      locale: ref('en')
+      t: () => { throw new Error('Host translation lookup is unavailable') },
+      locale
     }))
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -148,7 +149,9 @@ describe('automated payment amount calculator', () => {
           { label: 'commitmentRemaining', value: '25.00' },
           { label: 'availableBeforeHoldback', value: '93.50' },
           { label: 'holdbackReleaseAmount', value: '0.00' },
-          { label: 'totalPaymentsToDate', value: '50.00' }
+          { label: 'totalPaymentsToDate', value: '50.00' },
+          { label: 'totalCreditMemos', value: '1000.00' },
+          { label: 'totalCreditMemosForReconciledPeriods', value: '500.00' }
         ]
       })
     })))
@@ -169,8 +172,14 @@ describe('automated payment amount calculator', () => {
     expect(wrapper.text()).toContain('Commitment remaining')
     expect(wrapper.text()).toContain('Available before holdback')
     expect(wrapper.text()).toContain('Payments to date')
+    expect(wrapper.text()).toContain('Credit memos')
+    expect(wrapper.text()).toContain('Credit memos for reconciled periods')
     expect(wrapper.text()).not.toContain('baseAmount')
     expect(wrapper.text()).not.toContain('totalPaymentsToDate')
+    expect(wrapper.text()).not.toContain('totalCreditMemosForReconciledPeriods')
+    locale.value = 'fr'
+    await flushPromises()
+    expect(wrapper.text()).toContain('Notes de crédit des périodes rapprochées')
   })
 
   it('publishes a neutral result without calling the API until every required input is present', async () => {

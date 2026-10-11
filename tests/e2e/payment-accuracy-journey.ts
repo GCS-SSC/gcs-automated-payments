@@ -155,6 +155,10 @@ export const createPaymentLifecycleAuditRecorder = (page: Page, testInfo: TestIn
 export const preparePaymentAuditFixture = async (
   page: Page, source: Owner
 ) => {
+  const agencyConfiguration = await page.request.patch(`/api/extensions/agency/${source.agencyId}`, { data: {
+    extensionKey: 'gcs-automated-payments', enabled: true, config: { creditMemoBasis: 'reconciled-periods' }
+  } })
+  expect(agencyConfiguration.ok(), await agencyConfiguration.text()).toBe(true)
   const token = `${Date.now()}`
   const sourceBase = `/api/transfer-payments/${source.programId}/streams/${source.streamId}`
   const sourceRows = {
@@ -529,7 +533,7 @@ export const runPaymentAccuracyJourney = async (
         return { left: box.left, right: box.right, sectionLeft: section.left, sectionRight: section.right,
           overflow: element.scrollWidth > element.clientWidth }
       }))
-      expect(bounds).toHaveLength(8)
+      expect(bounds).toHaveLength(10)
       for (const bound of bounds) {
         expect(bound.left).toBeGreaterThanOrEqual(bound.sectionLeft)
         expect(bound.right).toBeLessThanOrEqual(bound.sectionRight)
@@ -542,7 +546,7 @@ export const runPaymentAccuracyJourney = async (
       await expect(retained.getByText(/Calculation retained when this payment was created/)).toBeVisible()
     }
     const retainedAmounts = retained.locator('dd')
-    await expect(retainedAmounts).toHaveCount(8)
+    await expect(retainedAmounts).toHaveCount(10)
     for (const [index, detail] of actual.details.entries()) {
       expect((await retainedAmounts.nth(index).innerText()).replace(/[^\d.-]/g, '')).toBe(detail.value)
     }

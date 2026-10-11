@@ -19,7 +19,10 @@ const detailLabelKeys: Record<string, keyof typeof messages.en> = {
   availableBeforeHoldback: 'details.available_before_holdback', holdbackReleaseAmount: 'details.holdback_release_amount',
   totalClaimsToLastClaimMonth: 'details.total_claims_to_last_claim_month',
   totalForecastToLastClaimMonth: 'details.total_forecast_to_last_claim_month',
-  totalForecastToPeriodEnd: 'details.total_forecast_to_period_end', totalPaymentsToDate: 'details.total_payments_to_date'
+  totalForecastToPeriodEnd: 'details.total_forecast_to_period_end', totalPaymentsToDate: 'details.total_payments_to_date',
+  totalCreditMemos: 'details.total_credit_memos',
+  totalCreditMemosForPayment: 'details.total_credit_memos_for_payment',
+  totalCreditMemosForReconciledPeriods: 'details.total_credit_memos_for_reconciled_periods'
 }
 const formatMoney = (value: string): string => {
   const [whole = '0', fraction = '00'] = value.split('.')

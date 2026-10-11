@@ -14,7 +14,7 @@ export const ZERO_AUTOMATED_PAYMENT_MONEY = '0.00' as AutomatedPaymentMoney
 // SDK transport native lower-case three-letter codes without importing host internals.
 export const AutomatedPaymentCurrencySchema = z.string().regex(/^[a-z]{3}$/).default('cad')
 
-const toCents = (value: string, bounded = false): bigint => {
+export const toCents = (value: string, bounded = false): bigint => {
   if (!MONEY_INPUT.test(value)) throw new TypeError('Money must be an exact decimal with at most two fractional digits.')
   const negative = value.startsWith('-')
   const [whole = '0', fraction = ''] = (negative ? value.slice(1) : value).split('.')
@@ -23,7 +23,7 @@ const toCents = (value: string, bounded = false): bigint => {
   if (bounded && (signed > MAX_ROW_CENTS || signed < -MAX_ROW_CENTS)) throw new RangeError('Money exceeds numeric(19,2).')
   return signed
 }
-const fromCents = (cents: bigint): AutomatedPaymentMoney => {
+export const fromCents = (cents: bigint): AutomatedPaymentMoney => {
   const negative = cents < BigInt(0)
   const absolute = negative ? -cents : cents
   return `${negative ? '-' : ''}${absolute / BigInt(100)}.${String(absolute % BigInt(100)).padStart(2, '0')}` as AutomatedPaymentMoney
@@ -57,6 +57,9 @@ export const compareAutomatedPaymentMoney = (a: AutomatedPaymentMoney, b: Automa
 export const sumAutomatedPaymentMoney = (values: AutomatedPaymentMoney[]) => values.reduce(addAutomatedPaymentMoney, ZERO_AUTOMATED_PAYMENT_MONEY)
 
 export interface AutomatedPaymentsStreamConfig { enabledPaymentTypes: AutomatedPaymentType[] }
+export const AutomatedPaymentCreditMemoBasisSchema = z.enum(['all', 'reconciled-periods'])
+export const AutomatedPaymentsAgencyConfigSchema = z.object({ creditMemoBasis: AutomatedPaymentCreditMemoBasisSchema })
+export type AutomatedPaymentCreditMemoBasis = z.infer<typeof AutomatedPaymentCreditMemoBasisSchema>
 export interface AutomatedPaymentExtensionPayload { releaseHoldback: boolean, holdbackReleaseAmount: AutomatedPaymentMoney }
 export interface AutomatedPaymentCalculationResult {
   baseAmount: AutomatedPaymentMoney
@@ -76,6 +79,8 @@ export const AutomatedPaymentCalculationEvidenceSchema = z.object({
   capturedAt: z.iso.datetime(),
   input: z.object({
     fiscalYearId: z.string(), commitmentTypeId: z.string(),
+    periodStart: z.number().int().min(0).max(11).optional(),
+    creditMemoBasis: AutomatedPaymentCreditMemoBasisSchema.optional(),
     paymentType: z.enum(automatedPaymentTypes), periodEnd: z.number().int().min(0).max(11),
     currency: z.string().regex(/^[a-z]{3}$/)
   }),
@@ -86,7 +91,7 @@ export const AutomatedPaymentCalculationEvidenceSchema = z.object({
     holdbackReleaseAmount: CalculationEvidenceMoneySchema, availableBeforeHoldback: CalculationEvidenceMoneySchema,
     details: z.array(z.object({
       label: z.enum(['baseAmount', 'commitmentRemaining', 'availableBeforeHoldback', 'holdbackReleaseAmount',
-        'totalClaimsToLastClaimMonth', 'totalForecastToLastClaimMonth', 'totalForecastToPeriodEnd', 'totalPaymentsToDate']),
+        'totalClaimsToLastClaimMonth', 'totalForecastToLastClaimMonth', 'totalForecastToPeriodEnd', 'totalPaymentsToDate', 'totalCreditMemos', 'totalCreditMemosForPayment', 'totalCreditMemosForReconciledPeriods']),
       value: CalculationEvidenceMoneySchema
     }))
   })

@@ -403,6 +403,86 @@ test.describe.serial('Automated payment lifecycle', () => {
       await page.close()
     }
   })
+  test('chooses agency credit memo policy through required bilingual extension settings', async ({ page }, testInfo) => {
+    test.setTimeout(90_000)
+    await login(page, 'root@example.com', 'password123')
+    const agencyPath = `/api/extensions/agency/${target.agencyId}`
+    await page.goto(`/en/agencies/${target.agencyId}?section=extensions`)
+    const row = page.getByRole('row').filter({ hasText: 'Automated payments' })
+    await row.getByRole('button', { name: 'Configure: Automated payments', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Automated payments', exact: true })
+    const choice = dialog.getByRole('combobox', { name: /^Credit memos used for payments/ })
+    await expect(choice).toHaveAttribute('aria-required', 'true')
+    await expect(choice).toHaveAttribute('aria-invalid', 'true')
+    await expect(dialog.getByText('Choose which credit memos payment calculations should use.', { exact: true })).toBeVisible()
+    const rejected = page.waitForResponse(response => response.url().includes(agencyPath) && response.request().method() === 'PATCH')
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click()
+    expect((await rejected).status()).toBe(400)
+    await expect(dialog).toBeVisible()
+    for (const [value, label] of [['all', 'All credit memos'], ['reconciled-periods', 'Credit memos for reconciled periods']] as const) {
+      await choice.click()
+      await page.getByRole('option', { name: label, exact: true }).click()
+      await expect(choice).toHaveAttribute('aria-invalid', 'false')
+      const saved = page.waitForResponse(response => response.url().includes(agencyPath) && response.request().method() === 'PATCH')
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click()
+      expect((await saved).status()).toBe(200)
+      await expect(dialog).toBeHidden()
+      const registry = await responseJson<{ items: Array<{ extension: { key: string }; config: { creditMemoBasis?: string } }> }>(await page.request.get(`${agencyPath}?limit=100`))
+      expect(registry.items.find(item => item.extension.key === AUTOMATED_PAYMENTS_EXTENSION_KEY)!.config.creditMemoBasis).toBe(value)
+      await page.reload()
+      await row.getByRole('button', { name: 'Configure: Automated payments', exact: true }).click()
+      await expect(choice).toHaveText(label)
+    }
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await page.goto(`/fr/agences/${target.agencyId}?section=extensions`)
+    await page.getByRole('row').filter({ hasText: 'Paiements automatises' }).getByRole('button', { name: 'Configurer: Paiements automatises', exact: true }).click()
+    const french = page.getByRole('dialog', { name: 'Paiements automatises', exact: true })
+    const frenchChoice = french.getByRole('combobox', { name: /^Notes de crédit utilisées pour les paiements/ })
+    await expect(frenchChoice).toHaveAttribute('aria-required', 'true')
+    await expect(frenchChoice).toHaveText('Notes de crédit des périodes rapprochées')
+    await page.screenshot({ path: testInfo.outputPath('agency-credit-memo-policy-fr.png'), fullPage: true })
+
+    const manualAgreementBase = '/api/agreements/177'
+    const manualAgreement = await responseJson<{ agency_id: string; egcs_fc_transferpaymentstream: string }>(
+      await page.request.get(manualAgreementBase)
+    )
+    expect(String(manualAgreement.agency_id)).toBe(target.agencyId)
+    expect(String(manualAgreement.egcs_fc_transferpaymentstream)).toBe('118')
+    const streamRegistry = await responseJson<{ items: Array<{ extension: { key: string }; streamEnabled: boolean }> }>(
+      await page.request.get('/api/extensions/streams/118')
+    )
+    expect(streamRegistry.items.find(item => item.extension.key === AUTOMATED_PAYMENTS_EXTENSION_KEY)!.streamEnabled).toBe(true)
+    await expectOk(await page.request.patch(agencyPath, { data: {
+      extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: false, config: {}
+    } }), 'Disable Agency automated payments without a credit memo choice')
+    const commitmentsResponse = await page.request.get(`${manualAgreementBase}/payments/lookups/commitments?currency=cad&limit=100`)
+    const fiscalYearsResponse = await page.request.get(`${manualAgreementBase}/payments/lookups/fiscal-years?currency=cad&limit=100`)
+    await expectOk(commitmentsResponse, 'Resolve manual Payment commitment type')
+    await expectOk(fiscalYearsResponse, 'Resolve manual Payment fiscal year')
+    const commitments = await responseJson<{ items: IdRow[] }>(commitmentsResponse)
+    const fiscalYears = await responseJson<{ items: IdRow[] }>(fiscalYearsResponse)
+    expect(commitments.items.length).toBeGreaterThan(0)
+    expect(fiscalYears.items.length).toBeGreaterThan(0)
+    const payee = await resolvePaymentAuditPayee(page, '177', '176')
+    const createdResponse = await page.request.post(`${manualAgreementBase}/payments`, { data: {
+      egcs_fc_applicantrecipient: payee.id,
+      egcs_fc_commitmenttype: String(commitments.items[0]!.id),
+      egcs_fc_fiscalyear: String(fiscalYears.items[0]!.id),
+      egcs_fc_paymenttype: 'advance',
+      egcs_fc_periodstart: 6,
+      egcs_fc_periodend: 8,
+      egcs_fc_paymentamount: '1.00',
+      egcs_fc_currency: 'cad'
+    } })
+    await expectOk(createdResponse, 'Create manual Payment while Agency extension is disabled')
+    const created = await responseJson<IdRow & { egcs_fc_paymentamount: string }>(createdResponse)
+    expect(created.egcs_fc_paymentamount).toBe('1.00')
+    const updatedResponse = await page.request.patch(`${manualAgreementBase}/payments/${created.id}`, {
+      data: { egcs_fc_paymentamount: '2.00' }
+    })
+    await expectOk(updatedResponse, 'Update manual Payment without an Agency credit memo choice')
+    expect((await responseJson<{ egcs_fc_paymentamount: string }>(updatedResponse)).egcs_fc_paymentamount).toBe('2.00')
+  })
   test('keeps calculator UI and server handler unavailable while disabled', async ({ page }) => {
     test.setTimeout(90_000)
     await login(page, 'root@example.com', 'password123')
@@ -508,7 +588,8 @@ test.describe.serial('Automated payment lifecycle', () => {
     const enableResponse = await page.request.patch(`/api/extensions/agency/${target.agencyId}`, {
       data: {
         extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY,
-        enabled: true
+        enabled: true,
+        config: { creditMemoBasis: 'reconciled-periods' }
       }
     })
     await expectOk(enableResponse, 'Enable automated payments for agency')
@@ -1100,7 +1181,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await login(page, 'root@example.com', 'password123')
 
     const enableAgencyResponse = await page.request.patch(`/api/extensions/agency/${target.agencyId}`, {
-      data: { extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: true }
+      data: { extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: true, config: { creditMemoBasis: 'reconciled-periods' } }
     })
     await expectOk(enableAgencyResponse, 'Enable automated payments for activation validation')
 

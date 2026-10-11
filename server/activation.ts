@@ -1,5 +1,5 @@
 import type { Kysely } from 'kysely'
-import { createAutomatedPaymentsMissingHoldbackBasesError } from './errors'
+import { createAutomatedPaymentsMissingHoldbackBasesError } from './errors.ts'
 
 type Db = Kysely<Record<string, Record<string, unknown>>>
 

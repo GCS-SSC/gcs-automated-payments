@@ -24,8 +24,13 @@ type AutomatedPaymentErrorCode =
   | 'GCS_AUTOMATED_PAYMENTS_MISSING_HOLDBACK_BASES'
   | 'GCS_AUTOMATED_PAYMENTS_UNSUPPORTED_HOLDBACK_BASIS'
   | 'GCS_AUTOMATED_PAYMENTS_EVIDENCE_INVALID'
+  | 'GCS_AUTOMATED_PAYMENTS_CREDIT_MEMO_BASIS_REQUIRED'
 
 const automatedPaymentErrorMessages: Record<AutomatedPaymentErrorCode, GcsExtensionLocalizedMessage> = {
+  GCS_AUTOMATED_PAYMENTS_CREDIT_MEMO_BASIS_REQUIRED: {
+    en: 'Choose which credit memos to use in the agency’s Automated payments extension settings before calculating payments.',
+    fr: 'Choisissez les notes de crédit à utiliser dans les paramètres de l’extension Paiements automatisés de l’organisme avant de calculer les paiements.'
+  },
   GCS_AUTOMATED_PAYMENTS_EVIDENCE_INVALID: {
     en: 'The retained payment calculation is invalid or uses an unsupported version.',
     fr: 'Le calcul conservé du paiement est invalide ou utilise une version non prise en charge.'

@@ -68,7 +68,9 @@ const calculationDetailLabelKeys: Record<string, keyof typeof messages.en> = {
   totalClaimsToLastClaimMonth: 'details.total_claims_to_last_claim_month',
   totalForecastToLastClaimMonth: 'details.total_forecast_to_last_claim_month',
   totalForecastToPeriodEnd: 'details.total_forecast_to_period_end',
-  totalPaymentsToDate: 'details.total_payments_to_date'
+  totalPaymentsToDate: 'details.total_payments_to_date',
+  totalCreditMemos: 'details.total_credit_memos',
+  totalCreditMemosForReconciledPeriods: 'details.total_credit_memos_for_reconciled_periods'
 }
 
 const calculationDetailItems = computed(() => [{

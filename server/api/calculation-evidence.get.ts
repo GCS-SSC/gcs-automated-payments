@@ -1,5 +1,5 @@
 import { defineGcsExtensionRouteHandler } from '@gcs-ssc/extensions/server'
-import { getPaymentCalculationEvidence } from '../calculation-data'
+import { getPaymentCalculationEvidence } from '../calculation-data.ts'
 
 export default defineGcsExtensionRouteHandler(async context => ({
   evidence: await getPaymentCalculationEvidence(

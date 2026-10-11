@@ -33,12 +33,14 @@ export default defineGcsExtensionRouteHandler(async context => {
       commitmentType: body.egcs_fc_commitmenttype,
       fiscalYearId: body.egcs_fc_fiscalyear,
       paymentType: body.egcs_fc_paymenttype,
+      periodStart: body.egcs_fc_periodstart,
       periodEnd: body.egcs_fc_periodend,
       submittedAmount: body.egcs_fc_paymentamount,
       releaseHoldback: extensionPayload.releaseHoldback,
       holdbackReleaseAmount: extensionPayload.holdbackReleaseAmount
     },
     config,
-    requireGcsExtensionAgreementFinancials(context)
+    requireGcsExtensionAgreementFinancials(context),
+    context.agencyConfig
   )
 })
