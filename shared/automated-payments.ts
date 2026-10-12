@@ -70,6 +70,14 @@ export interface AutomatedPaymentCalculationResult {
   availableBeforeHoldback: AutomatedPaymentMoney
   currency: string
   details: Array<{ label: string, value: AutomatedPaymentMoney }>
+  explanation?: Array<{
+    label: string
+    rows: Array<{ label: string, value: AutomatedPaymentMoney, operator?: '+' | '−' | '×', format?: 'percent' }>
+    total: { label: string, value: AutomatedPaymentMoney }
+    notes?: string[]
+    noteValues?: Record<string, AutomatedPaymentMoney>
+    emphasis?: boolean
+  }>
 }
 
 const CalculationEvidenceMoneySchema = z.string().regex(/^-?(?:0|[1-9]\d*)\.\d{2}$/)

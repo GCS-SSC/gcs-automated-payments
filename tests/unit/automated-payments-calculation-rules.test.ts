@@ -109,4 +109,86 @@ describe('extension Payment exact entitlement and holdback rules', () => {
     expect(result).toMatchObject({ baseAmount: '1500.00', ceilingAmount: '100.00' })
   })
 
+  it('explains advance arithmetic, capped reserves and releases as labeled operands', () => {
+    const result = calculateAgreementPaymentValues({ ...defaults, paymentType: 'advance',
+      totalClaimsToLastClaimMonth: '2000.00', totalForecastToLastClaimMonth: '3000.00',
+      totalForecastToPeriodEnd: '9000.00', totalPaymentsToDate: '5500.00',
+      totalCreditMemos: '1000.00', totalCreditMemosForReconciledPeriods: '500.00',
+      commitmentRemaining: '7500.00', availableForDisbursementBeforeHoldback: '6500.00',
+      finalFiscalYearTotal: '100000.05', releaseHoldback: true, holdbackReleaseAmount: '9999.99' },
+    { holdbackPercent: '10', holdbackBasis: 'finalfiscal' })
+    expect(result.explanation).toEqual([
+      { label: 'explanation.payment_calculation', rows: [
+        { label: 'explanation.claims', value: '2000.00' },
+        { label: 'explanation.forecast', value: '9000.00', operator: '+' },
+        { label: 'explanation.claimed_forecast', value: '3000.00', operator: '−' },
+        { label: 'explanation.paid', value: '5500.00', operator: '−' },
+        { label: 'credit_memo_basis.reconciled_periods', value: '500.00', operator: '+' }
+      ], total: { label: 'explanation.payment_calculation', value: '3000.00' } },
+      { label: 'explanation.holdback', rows: [
+        { label: 'explanation.final_year', value: '100000.05' },
+        { label: 'explanation.holdback_rate', value: '10.00', operator: '×', format: 'percent' }
+      ], total: { label: 'explanation.full_holdback', value: '10000.00' },
+      notes: ['explanation.reserve_limited'], noteValues: { reserve: '6000.00' } },
+      { label: 'explanation.available_funds', rows: [
+        { label: 'explanation.funding', value: '6500.00' },
+        { label: 'explanation.unreconciled_credits', value: '500.00', operator: '−' },
+        { label: 'explanation.reserved', value: '6000.00', operator: '−' },
+        { label: 'explanation.released', value: '6000.00', operator: '+' }
+      ], total: { label: 'explanation.available_funds', value: '6000.00' },
+      notes: ['explanation.credit_policy', 'explanation.release_limited'], noteValues: { requested: '9999.99', released: '6000.00' } },
+      { label: 'explanation.payment_limits', emphasis: true, rows: [
+        { label: 'explanation.payment_calculation', value: '3000.00' },
+        { label: 'explanation.commitment', value: '7500.00' },
+        { label: 'explanation.available_funds', value: '6000.00' }
+      ], total: { label: 'explanation.maximum', value: '3000.00' }, notes: ['explanation.limited_calculation'] }
+    ])
+  })
+
+  it('explains reimbursement using all credits, omits forecasts and keeps aggregate cents', () => {
+    const result = calculateAgreementPaymentValues({ ...defaults, totalClaimsToLastClaimMonth: '199999999999999999.98',
+      totalPaymentsToDate: '10.01', totalCreditMemos: '2.02', totalCreditMemosForReconciledPeriods: '1.00' },
+    { holdbackPercent: '0', holdbackBasis: 'fullagreement' }, 'all')
+    expect(result.explanation?.[0]).toEqual({ label: 'explanation.payment_calculation', rows: [
+      { label: 'explanation.claims', value: '199999999999999999.98' },
+      { label: 'explanation.paid', value: '10.01', operator: '−' },
+      { label: 'credit_memo_basis.all', value: '2.02', operator: '+' }
+    ], total: { label: 'explanation.payment_calculation', value: '199999999999999991.99' } })
+    expect(result.explanation).toHaveLength(3)
+    expect(JSON.stringify(result.explanation)).not.toContain('99999999999999999.99')
+    expect(result.explanation?.[1]?.rows).toEqual([{ label: 'explanation.funding', value: '1000.00' }])
+  })
+
+  it('keeps one starting zero for an empty calculation and removes irrelevant zero operands', () => {
+    const empty = calculateAgreementPaymentValues({ ...defaults, paymentType: 'advance', totalClaimsToLastClaimMonth: '0.00' },
+      { holdbackPercent: '0', holdbackBasis: 'fullagreement' })
+    expect(empty.explanation?.[0]?.rows).toEqual([{ label: 'explanation.forecast', value: '0.00' }])
+    const advance = calculateAgreementPaymentValues({ ...defaults, paymentType: 'advance', totalClaimsToLastClaimMonth: '0.00',
+      totalForecastToPeriodEnd: '51750.00', totalPaymentsToDate: '5000.00' }, { holdbackPercent: '0', holdbackBasis: 'fullagreement' })
+    expect(advance.explanation?.[0]?.rows).toEqual([
+      { label: 'explanation.forecast', value: '51750.00' },
+      { label: 'explanation.paid', value: '5000.00', operator: '−' }
+    ])
+  })
+
+  it('keeps a leading subtraction and explains negative entitlement and exhausted funding', () => {
+    const result = calculateAgreementPaymentValues({ ...defaults, totalClaimsToLastClaimMonth: '0.00', totalPaymentsToDate: '2000.00',
+      availableForDisbursementBeforeHoldback: '-1000.00' }, { holdbackPercent: '10', holdbackBasis: 'fullagreement' })
+    expect(result.explanation?.[0]).toMatchObject({ rows: [{ label: 'explanation.paid', value: '2000.00', operator: '−' }],
+      total: { value: '-2000.00' }, notes: ['explanation.nothing_payable'] })
+    expect(result.explanation?.[2]).toMatchObject({ total: { value: '0.00' }, notes: ['explanation.availability_zero'] })
+    expect(result.ceilingAmount).toBe('0.00')
+  })
+
+  it.each([
+    ['1000.00', '500.00', '1000.00', '500.00', 'explanation.limited_commitment'],
+    ['1000.00', '1000.00', '499.99', '499.99', 'explanation.limited_funding'],
+    ['199999999999999999.98', '199999999999999999.98', '199999999999999999.98', '99999999999999999.99', 'explanation.limited_payment']
+  ])('identifies the limit with claims %s, commitment %s and funds %s', (claims, commitment, funds, maximum, reason) => {
+    const result = calculateAgreementPaymentValues({ ...defaults, totalClaimsToLastClaimMonth: claims!,
+      commitmentRemaining: commitment!, availableForDisbursementBeforeHoldback: funds! },
+    { holdbackPercent: '0', holdbackBasis: 'fullagreement' })
+    expect(result.explanation?.at(-1)).toMatchObject({ emphasis: true, total: { value: maximum }, notes: [reason] })
+    expect(result.explanation?.at(-1)?.rows).toHaveLength(reason === 'explanation.limited_payment' ? 4 : 3)
+  })
 })

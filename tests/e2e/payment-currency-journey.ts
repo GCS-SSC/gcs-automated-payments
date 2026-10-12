@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, type Browser, type Page, type TestInfo } from '@playwright/test'
-import { preparePaymentAuditFixture, resolvePaymentAuditPayee, selectPaymentAuditPayee } from './payment-accuracy-journey'
+import { preparePaymentAuditFixture, resolvePaymentAuditPayee, reviewPaymentAuditWizard, selectPaymentAuditPayee } from './payment-accuracy-journey'
 import { createNativeAgreementThroughUi } from './agreement-native-create'
 
 type Currency = 'cad' | 'usd'
@@ -380,6 +380,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       }
       await expect.poll(async () => (await dialog.getByRole('textbox', { name: /^Amount/ }).inputValue()).replace(/[^\d.-]/g, '')).toBe(expected)
       await expect(currencyControl).toHaveText(currencyLabel(currency))
+      await reviewPaymentAuditWizard(page, dialog, owners[currency].agreementId)
       const response = page.waitForResponse(candidate => candidate.request().method() === 'POST' && candidate.url().endsWith(`${agreementBase}/payments`))
       await dialog.getByRole('button', { name: 'Add', exact: true }).click()
       const payment = await (await response).json() as Row

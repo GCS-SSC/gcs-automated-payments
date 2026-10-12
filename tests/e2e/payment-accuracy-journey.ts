@@ -83,6 +83,20 @@ export const selectPaymentAuditPayee = async (page: Page, dialog: Locator, payee
   await expect(control).toHaveText(payee.label_en)
 }
 
+/** Reviews the host's recovery and confirmation steps before the existing Payment save. */
+export const reviewPaymentAuditWizard = async (page: Page, dialog: Locator, agreementId: string) => {
+  const french = new URL(page.url()).pathname.startsWith('/fr/')
+  const next = dialog.getByRole('button', { name: french ? 'Suivant' : 'Next', exact: true })
+  const previewResponse = page.waitForResponse(response =>
+    new URL(response.url()).pathname === `/api/agreements/${agreementId}/payments/preview`
+    && response.request().method() === 'POST')
+  await next.click()
+  const preview = await previewResponse
+  expect(preview.ok(), `Review Payment recovery: ${preview.status()} ${await preview.text()}`).toBe(true)
+  await next.click()
+  await expect(dialog.getByRole('button', { name: french ? 'Ajouter' : 'Add', exact: true })).toBeEnabled()
+}
+
 export const shiftPaymentAuditMoney = (value: string, adjustment: string) => money(cents(value) + cents(adjustment))
 
 /** Captures public source evidence for each independently asserted JV/Correction checkpoint. */
@@ -480,6 +494,7 @@ export const runPaymentAccuracyJourney = async (
       await expect(amount).toHaveValue(override)
     }
     const requested = override ?? expected
+    await reviewPaymentAuditWizard(page, dialog, owner.agreementId)
     await dialog.getByRole('button', { name: 'Add', exact: true }).click()
     await expect(dialog).toBeHidden()
     const created = (await read<{ payments: Id[] }>(page, `${agreementBase}/payments-overview`)).payments.find(row => !before.includes(row.id))!

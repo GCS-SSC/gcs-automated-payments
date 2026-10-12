@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h, ref } from 'vue'
 import AutomatedPaymentAmountCalculator from '../../components/AutomatedPaymentAmountCalculator.vue'
+import type { GcsPaymentAmountCalculatorResult } from '@gcs-ssc/extensions/ui'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -128,7 +129,7 @@ describe('automated payment amount calculator', () => {
     })
   })
 
-  it('renders calculation details with readable labels in an accordion', async () => {
+  it('publishes localized arithmetic for the host disclosure without rendering a second accordion', async () => {
     const locale = ref('en')
     vi.stubGlobal('useI18n', () => ({
       t: () => { throw new Error('Host translation lookup is unavailable') },
@@ -144,6 +145,22 @@ describe('automated payment amount calculator', () => {
         holdbackReleaseAmount: '0.00',
         availableBeforeHoldback: '93.50',
         currency: 'CAD',
+        explanation: [
+          { label: 'explanation.payment_calculation', rows: [
+            { label: 'explanation.claims', value: '200.00' },
+            { label: 'explanation.forecast', value: '500.00', operator: '+' },
+            { label: 'explanation.claimed_forecast', value: '300.00', operator: '−' },
+            { label: 'explanation.paid', value: '100.00', operator: '−' },
+            { label: 'credit_memo_basis.reconciled_periods', value: '500.00', operator: '+' }
+          ], total: { label: 'explanation.payment_calculation', value: '800.00' } },
+          { label: 'explanation.holdback', rows: [
+            { label: 'explanation.agreement_total', value: '1000.00' },
+            { label: 'explanation.holdback_rate', value: '10.00', operator: '×', format: 'percent' }
+          ], total: { label: 'explanation.full_holdback', value: '100.00' },
+          notes: ['explanation.reserve_limited'], noteValues: { reserve: '50.00' } },
+          { label: 'explanation.payment_limits', rows: [{ label: 'explanation.payment_calculation', value: '10.00' }],
+            total: { label: 'explanation.maximum', value: '10.00' }, emphasis: true, notes: ['explanation.limited_calculation'] }
+        ],
         details: [
           { label: 'baseAmount', value: '10.00' },
           { label: 'commitmentRemaining', value: '25.00' },
@@ -167,19 +184,58 @@ describe('automated payment amount calculator', () => {
 
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Calculation details')
-    expect(wrapper.text()).toContain('Base amount')
-    expect(wrapper.text()).toContain('Commitment remaining')
-    expect(wrapper.text()).toContain('Available before holdback')
-    expect(wrapper.text()).toContain('Payments to date')
-    expect(wrapper.text()).toContain('Credit memos')
-    expect(wrapper.text()).toContain('Credit memos for reconciled periods')
-    expect(wrapper.text()).not.toContain('baseAmount')
-    expect(wrapper.text()).not.toContain('totalPaymentsToDate')
-    expect(wrapper.text()).not.toContain('totalCreditMemosForReconciledPeriods')
+    expect(wrapper.find('section section').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Calculation details')
+    const result = () => wrapper.emitted('result')?.at(-1)?.[0] as GcsPaymentAmountCalculatorResult
+    expect(result().explanation).toEqual([
+      { label: 'Calculated payment', rows: [
+        { label: 'Reconciled claims', value: 'CAD $200.00' },
+        { label: 'Forecast to period end', value: 'CAD $500.00', operator: '+' },
+        { label: 'Forecast replaced by claims', value: 'CAD $300.00', operator: '−' },
+        { label: 'Payments already made', value: 'CAD $100.00', operator: '−' },
+        { label: 'Credit memos for reconciled periods', value: 'CAD $500.00', operator: '+' }
+      ], total: { label: 'Calculated payment', value: 'CAD $800.00' } },
+      { label: 'Holdback', rows: [
+        { label: 'Agreement total', value: 'CAD $1,000.00' },
+        { label: 'Holdback rate', value: '10%', operator: '×' }
+      ], total: { label: 'Full holdback', value: 'CAD $100.00' },
+      note: 'Rounded down to whole dollars. Only CAD $50.00 remains to hold back.' },
+      { label: 'Payment limits', rows: [{ label: 'Calculated payment', value: 'CAD $10.00' }],
+        total: { label: 'Maximum payment', value: 'CAD $10.00' }, emphasis: true, note: 'Limited by the calculated payment.' }
+    ])
+    const fetchCalls = vi.mocked(fetch).mock.calls.length
     locale.value = 'fr'
     await flushPromises()
-    expect(wrapper.text()).toContain('Notes de crédit des périodes rapprochées')
+    expect(result().explanation?.[0]?.rows.at(-1)).toEqual({ label: 'Notes de crédit des périodes rapprochées', value: '500,00\u00a0$ CAD', operator: '+' })
+    expect(result().explanation?.[1]).toEqual({ label: 'Retenue', rows: [
+      { label: 'Total de l’entente', value: '1\u00a0000,00\u00a0$ CAD' },
+      { label: 'Taux de retenue', value: '10%', operator: '×' }
+    ], total: { label: 'Retenue complète', value: '100,00\u00a0$ CAD' },
+    note: 'Arrondie au dollar inférieur. Il ne reste que 50,00\u00a0$ CAD à retenir.' })
+    expect(wrapper.text()).toContain('Paiement maximal')
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(fetchCalls)
+  })
+
+  it.each([
+    ['en', 'USD -$199,999,999,999,999,999.98', '12.34', '12.34'],
+    ['fr', '-199\u00a0999\u00a0999\u00a0999\u00a0999\u00a0999,98\u00a0$ USD', '12.34', '12,34'],
+    ['en', 'USD -$199,999,999,999,999,999.98', '0.01', '0.01'],
+    ['fr', '-199\u00a0999\u00a0999\u00a0999\u00a0999\u00a0999,98\u00a0$ USD', '12.50', '12,5']
+  ])('formats signed aggregate operands and fractional percentages in %s', async (language, expectedNegative, percentage, expectedPercentage) => {
+    vi.stubGlobal('useI18n', () => ({ locale: ref(language) }))
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({
+      ceilingAmount: '10.00', suggestedAmount: '10.00', currency: 'USD', details: [],
+      explanation: [{ label: 'explanation.holdback', rows: [
+        { label: 'explanation.agreement_total', value: '-199999999999999999.98' },
+        { label: 'explanation.paid', value: '-199999999999999999.98', operator: '−' },
+        { label: 'explanation.holdback_rate', value: percentage, operator: '×', format: 'percent' }
+      ], total: { label: 'explanation.full_holdback', value: '0.00' }, notes: ['explanation.rounded'] }]
+    }) })))
+    const wrapper = mountCalculator({ commitmentType: '1', fiscalYear: '1', paymentType: 'advance', currency: 'usd', periodStart: 0, periodEnd: 0 })
+    await flushPromises()
+    const result = wrapper.emitted('result')?.at(-1)?.[0] as GcsPaymentAmountCalculatorResult
+    expect(result.explanation?.[0]?.rows.map(row => row.value)).toEqual([expectedNegative, `(${expectedNegative})`, `${expectedPercentage}%`])
+    expect(result.explanation?.[0]?.total.value).toBe(language === 'fr' ? '0,00\u00a0$ USD' : 'USD $0.00')
   })
 
   it('publishes a neutral result without calling the API until every required input is present', async () => {

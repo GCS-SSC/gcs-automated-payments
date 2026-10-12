@@ -1,7 +1,7 @@
 import { expect, test, type APIResponse, type Page } from '@playwright/test'
 import { addAutomatedPaymentMoney, subtractAutomatedPaymentMoney, parseAutomatedPaymentMoney, type AutomatedPaymentCalculationResult } from '../../shared/automated-payments'
 import { deleteUnsubmittedCommitmentDrafts, postNegativeCorrection } from './correction-fixture'
-import { createPaymentAuditRecipient, createPaymentLifecycleAuditRecorder, resolvePaymentAuditPayee, runPaymentAccuracyJourney, selectPaymentAuditPayee, shiftPaymentAuditMoney } from './payment-accuracy-journey'
+import { createPaymentAuditRecipient, createPaymentLifecycleAuditRecorder, resolvePaymentAuditPayee, reviewPaymentAuditWizard, runPaymentAccuracyJourney, selectPaymentAuditPayee, shiftPaymentAuditMoney } from './payment-accuracy-journey'
 import { runPaymentCurrencyJourney } from './payment-currency-journey'
 import { runPaymentEmptyFinalFiscalYearJourney } from './payment-empty-final-fy-journey'
 
@@ -413,11 +413,12 @@ test.describe.serial('Automated payment lifecycle', () => {
     const dialog = page.getByRole('dialog', { name: 'Automated payments', exact: true })
     const choice = dialog.getByRole('combobox', { name: /^Credit memos used for payments/ })
     await expect(choice).toHaveAttribute('aria-required', 'true')
-    await expect(choice).toHaveAttribute('aria-invalid', 'true')
-    await expect(dialog.getByText('Choose which credit memos payment calculations should use.', { exact: true })).toBeVisible()
-    const rejected = page.waitForResponse(response => response.url().includes(agencyPath) && response.request().method() === 'PATCH')
-    await dialog.getByRole('button', { name: 'Save', exact: true }).click()
-    expect((await rejected).status()).toBe(400)
+    await expect(choice).toHaveAttribute('aria-invalid', 'false')
+    await expect(choice).toHaveText('Credit memos for reconciled periods')
+    const rejected = await page.request.patch(agencyPath, { data: {
+      extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: true, config: {}
+    } })
+    expect(rejected.status()).toBe(400)
     await expect(dialog).toBeVisible()
     for (const [value, label] of [['all', 'All credit memos'], ['reconciled-periods', 'Credit memos for reconciled periods']] as const) {
       await choice.click()
@@ -502,7 +503,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
     const paymentDialog = page.getByRole('dialog', { name: 'Add Payment' })
     await expect(paymentDialog).toBeVisible()
-    await expect(paymentDialog.getByText('Automated payment ceiling', { exact: true })).toHaveCount(0)
+    await expect(paymentDialog.getByRole('heading', { name: 'Maximum payment', exact: true })).toHaveCount(0)
   })
 
   test('runs allocation, commitment, forecast, and automatically calculated advance payment', async ({ page, browser }, testInfo) => {
@@ -909,7 +910,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await page.getByRole('option', { name: 'Apr', exact: true }).click()
     await paymentDialog.getByRole('combobox', { name: /^Period end/ }).click()
     await page.getByRole('option', { name: 'Jun', exact: true }).click()
-    await expect(paymentDialog.getByText('Automated payment ceiling', { exact: true })).toBeVisible()
+    await expect(paymentDialog.getByRole('heading', { name: 'Maximum payment', exact: true })).toBeVisible()
     const amountInput = paymentDialog.getByRole('textbox', { name: /^Amount/ })
     const readRenderedAmount = async () => Number((await amountInput.inputValue()).replace(/[^0-9.-]/g, ''))
     await expect.poll(readRenderedAmount).toBeGreaterThan(0)
@@ -917,6 +918,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await paymentDialog.getByRole('textbox', { name: 'Comment' }).fill(
       'Lifecycle test advance payment created through the rendered UI.'
     )
+    await reviewPaymentAuditWizard(page, paymentDialog, target.agreementId)
     await paymentDialog.getByRole('button', { name: 'Add', exact: true }).click()
     await expect(paymentDialog).toBeHidden()
 
@@ -1172,7 +1174,9 @@ test.describe.serial('Automated payment lifecycle', () => {
     await page.getByRole('tab', { name: 'Paiements' }).last().click()
     await page.getByRole('button', { name: 'Ajouter un paiement', exact: true }).click()
     await expect(page.getByRole('dialog', { name: 'Ajouter un paiement' })
-      .getByText('Plafond du paiement automatisé', { exact: true })).toBeVisible()
+      .getByRole('heading', { name: 'Paiement maximal', exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Ajouter un paiement' }).getByRole('button', { name: 'Suivant', exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Ajouter un paiement' }).getByRole('button', { name: 'Ajouter', exact: true })).toHaveCount(0)
     await page.reload()
     await expect(page.getByRole('button', { name: 'Basculer la navigation' })).toBeVisible()
   })

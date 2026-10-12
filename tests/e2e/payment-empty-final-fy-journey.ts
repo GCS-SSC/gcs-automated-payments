@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, type Browser, type Page, type TestInfo } from '@playwright/test'
-import { preparePaymentAuditFixture, selectPaymentAuditPayee } from './payment-accuracy-journey'
+import { preparePaymentAuditFixture, reviewPaymentAuditWizard, selectPaymentAuditPayee } from './payment-accuracy-journey'
 
 type Row = { id: string } & Record<string, unknown>
 type Owner = { agencyId: string; programId: string; streamId: string; agreementId: string }
@@ -108,6 +108,7 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
     await choose(/^Period end/, 'Apr')
     await expect.poll(async () => (await dialog.getByRole('textbox', { name: /^Amount/ }).inputValue()).replace(/[^\d.-]/g, '')).toBe('1000.05')
     await page.screenshot({ path: testInfo.outputPath('empty-final-fy-calculator-H0.png'), fullPage: true })
+    await reviewPaymentAuditWizard(page, dialog, owner.agreementId)
     const paymentResponse = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith(`${agreementBase}/payments`))
     await dialog.getByRole('button', { name: 'Add', exact: true }).click()
     const payment = await (await paymentResponse).json() as Row

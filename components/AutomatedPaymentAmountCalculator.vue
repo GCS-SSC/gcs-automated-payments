@@ -5,7 +5,6 @@ import type { Ref } from 'vue'
 import type { GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
 import type { GcsPaymentAmountCalculatorResult } from '@gcs-ssc/extensions/ui'
 import {
-  ExtensionAccordion,
   ExtensionBadge,
   ExtensionCheckbox,
   ExtensionFormField,
@@ -59,25 +58,6 @@ let calculationSequence = 0
 onBeforeUnmount(() => {
   calculationSequence += 1
 })
-
-const calculationDetailLabelKeys: Record<string, keyof typeof messages.en> = {
-  baseAmount: 'details.base_amount',
-  commitmentRemaining: 'details.commitment_remaining',
-  availableBeforeHoldback: 'details.available_before_holdback',
-  holdbackReleaseAmount: 'details.holdback_release_amount',
-  totalClaimsToLastClaimMonth: 'details.total_claims_to_last_claim_month',
-  totalForecastToLastClaimMonth: 'details.total_forecast_to_last_claim_month',
-  totalForecastToPeriodEnd: 'details.total_forecast_to_period_end',
-  totalPaymentsToDate: 'details.total_payments_to_date',
-  totalCreditMemos: 'details.total_credit_memos',
-  totalCreditMemosForReconciledPeriods: 'details.total_credit_memos_for_reconciled_periods'
-}
-
-const calculationDetailItems = computed(() => [{
-  label: t('calculation_details'),
-  value: 'details',
-  icon: 'i-lucide-list'
-}])
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -156,12 +136,26 @@ const formatMoney = (value: AutomatedPaymentMoney) => {
   return isFrench ? `${negative ? '-' : ''}${amount}\u00a0$ ${currency}` : `${currency} ${negative ? '-' : ''}$${amount}`
 }
 
-const calculationDetails = computed(() =>
-  calculation.value?.details.map(detail => ({
-    label: calculationDetailLabelKeys[detail.label] ? t(calculationDetailLabelKeys[detail.label]!) : detail.label,
-    value: detail.value
-  })) ?? []
-)
+const calculationExplanation = computed(() => calculation.value?.explanation?.map(step => ({
+  label: t(step.label as keyof typeof messages.en),
+  rows: step.rows.map(row => {
+    const percentage = row.value.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+    const value = row.format === 'percent'
+      ? `${locale.value === 'fr' ? percentage.replace('.', ',') : percentage}%`
+      : formatMoney(row.value)
+    return {
+      label: t(row.label as keyof typeof messages.en),
+      value: row.operator && row.value.startsWith('-') ? `(${value})` : value,
+      ...(row.operator ? { operator: row.operator } : {})
+    }
+  }),
+  total: { label: t(step.total.label as keyof typeof messages.en), value: formatMoney(step.total.value) },
+  ...(step.notes?.length
+    ? { note: step.notes.map(key => t(key as keyof typeof messages.en,
+        Object.fromEntries(Object.entries(step.noteValues ?? {}).map(([name, value]) => [name, formatMoney(value)])))).join(' ') }
+    : {}),
+  ...(step.emphasis ? { emphasis: true } : {})
+})) ?? [])
 
 const serializedHoldbackReleaseAmount = computed(() => {
   if (!releaseHoldback.value || holdbackReleaseAmount.value === '') {
@@ -209,11 +203,14 @@ const publishResult = () => {
     suggestedAmount: calculation.value?.suggestedAmount,
     currency: calculation.value?.currency ?? selectedCurrency.value?.toUpperCase(),
     details: calculation.value?.details ?? [],
+    explanation: calculationExplanation.value,
     loading: isLoading.value,
     error: errorMessage.value
   }
   emit('result', result)
 }
+
+watch(locale, publishResult)
 
 /** Recalculates the payment ceiling from the current form values and publishes the result. */
 const calculate = async () => {
@@ -266,7 +263,7 @@ watch([() => JSON.stringify(requestBody.value), endpoint], calculate, { immediat
 </script>
 
 <template>
-  <section class="border-default space-y-3 border-y py-4">
+  <section class="space-y-3 py-4">
     <div class="flex items-center justify-between gap-3">
       <div>
         <h3 class="text-sm font-semibold text-highlighted">
@@ -310,35 +307,5 @@ watch([() => JSON.stringify(requestBody.value), endpoint], calculate, { immediat
     <p v-else-if="errorMessage" class="text-sm text-error">
       {{ errorMessage }}
     </p>
-    <ExtensionAccordion
-      v-else-if="calculation && calculationDetails.length > 0"
-      type="multiple"
-      :items="calculationDetailItems"
-      :default-value="[]"
-      :unmount-on-hide="false"
-      :ui="{
-        root: 'border-default border-t',
-        item: 'border-b-0',
-        header: 'm-0',
-        trigger: 'w-full px-0 py-2 text-left text-sm font-semibold text-highlighted transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/30',
-        body: 'px-0 pb-1 pt-2',
-        content: 'data-[state=open]:animate-none'
-      }">
-      <template #body>
-        <dl class="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
-          <div
-            v-for="detail in calculationDetails"
-            :key="detail.label"
-            class="border-default grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3 border-b py-1.5">
-            <dt class="min-w-0 text-muted">
-              {{ detail.label }}
-            </dt>
-            <dd class="font-medium text-highlighted tabular-nums whitespace-nowrap">
-              {{ formatMoney(detail.value) }}
-            </dd>
-          </div>
-        </dl>
-      </template>
-    </ExtensionAccordion>
   </section>
 </template>

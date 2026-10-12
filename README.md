@@ -21,6 +21,8 @@ unconfigured agencies must choose a basis before automated calculations or payme
 creation/update checks can run. Stream settings separately choose enabled Payment
 types. The host supplies the owning Agency configuration through the SDK to read
 routes and transactional mutation hooks; request bodies cannot override it.
+The NCIA demo Agency explicitly seeds `creditMemoBasis: 'reconciled-periods'`;
+this is demo configuration and does not supply a default for other Agencies.
 
 Payments to date include cash, signed successful JVs and Corrections through the
 selected month, excluding Credit Memo recoveries. Credit memos separately include
@@ -105,3 +107,15 @@ optional grep selects the independent fixed-input journey, including all ten
 creation-time evidence values after Payment approval. The full suite also includes
 an Outcome Cost Allocator journey; that extension's migration to the new coding
 allocator remains outside this change.
+
+The live calculator publishes localized calculation ledgers to the host-owned
+Calculation details disclosure, followed by host Financial inputs and Commitment
+lines. The extension keeps its maximum-payment header and holdback controls,
+and renders no separate accordion. Labeled operands show the calculated payment,
+holdback basis and rate, and available funds; a final comparison identifies the
+limit that sets the maximum payment. Zero operands are omitted unless they are
+the only starting amount or an elected release. A zero holdback rate omits the
+holdback ledger. Notes explain negative totals, whole-dollar rounding, capped
+reserves and releases. Locale changes republish labels, currency amounts and
+percentages without recalculating. These optional live explanations do not alter
+retained version-1 calculation evidence.
