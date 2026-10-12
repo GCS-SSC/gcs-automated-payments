@@ -58,26 +58,30 @@ and release changes recalculate the ceiling without replacing that choice. Creat
 and update guards re-read host inputs and extension calculations under the Agreement lock and reject
 amounts above the live ceiling. Amount keystrokes do not change calculation inputs.
 
-Creation stores `payment-metadata.calculationEvidence` in extension KV under
-`fundingcasepayment`. Version 1 captures the selection, agency credit basis, timestamp and all ten
-calculation details together with the exact ceiling, reserve and currency. The
-Payment calculation tab reads this creation-time snapshot without recomputing or
-enriching it from live financial records. Missing preexisting snapshots have an
-explicit empty state; corrupt authored evidence returns a localized error. The
-read route uses the host-dispatched Payment scope with Agreement Viewer authority
-and Agency/Stream extension enablement. English/French presentation, retry and
-stale Payment response protection belong to the extension. Existing holdback
-release metadata remains readable by update guards. Older version-1 snapshots
-without start month or either Credit Memo field remain readable and are never
-enriched from live data. Earlier snapshots with `totalCreditMemosForPayment`
-retain their historical “Eligible credit memos” label and calculation result;
-current calculations publish only total Credit memos and Credit memos for reconciled periods.
+Creation and permitted draft financial edits store `payment-metadata.calculationEvidence` in extension KV under
+`fundingcasepayment`. Version 2 retains selection, agency credit basis, calculation timestamp,
+exact amounts and the extension-owned semantic arithmetic ledgers: row labels,
+operators, percentages, totals, limiting reasons and note values. The host's
+Payment evidence page includes the extension's `payment.evidence` slot alongside
+host-owned financial inputs and Commitment balances, without disclosures. The
+extension localizes its retained ledger and uses the SDK calculation breakdown
+renderer shared with the payment wizard. Display never recomputes or enriches evidence
+from live financial records. An authorized draft update that supplies financial
+selection, amount or offset-plan fields recalculates and replaces the retained
+basis inside the same locked host transaction, excluding that Payment. Comment-only
+edits keep the prior basis. The existing Payment editability/status gate freezes
+evidence when the Payment locks. Disabled Agency, Stream or Payment-type automation
+invalidates its old calculation on a permitted financial edit while preserving
+holdback-release metadata; reenabling cannot display a stale calculation. Missing snapshots show an explicit empty state;
+corrupt evidence returns a localized error with Retry. Payment Viewer authority,
+Agency/Stream enablement and stale Payment response protection still apply.
+Older version-1 snapshots remain simple historical detail rows, including their
+original “Eligible credit memos” label where present. Missing historical ledger
+values are never invented. Existing holdback-release metadata stays readable by
+update guards. The Calculation details SDK section uses the full workspace width.
 
-The tab uses the shared host workspace's full available width; the evidence body
-supplies a distinct Calculation details SDK section without a private max-width.
-Payment section bookmarks and reloads wait for successful tab discovery before URL normalization. Discovery failures retain the requested section
-and expose a local announced retry without replacing the Payment's business data.
-Evidence rows stack at phone widths and allow long exact currency text to wrap.
+The host owns Payment evidence navigation and contribution discovery. Saved
+ledger rows use the wizard's responsive layout and wrap long exact amounts.
 
 The extension creates no dedicated tables. `extensions.kv_entry` retains host audit
 ownership: Payment → Commitment → Agreement → Program stream → Agency. The manifest
@@ -117,5 +121,5 @@ limit that sets the maximum payment. Zero operands are omitted unless they are
 the only starting amount or an elected release. A zero holdback rate omits the
 holdback ledger. Notes explain negative totals, whole-dollar rounding, capped
 reserves and releases. Locale changes republish labels, currency amounts and
-percentages without recalculating. These optional live explanations do not alter
-retained version-1 calculation evidence.
+percentages without recalculating. Version-2 evidence retains these raw semantic
+ledgers at creation or the latest permitted recalculation and displays them with the same renderer and formatter.

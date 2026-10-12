@@ -19,6 +19,7 @@ import {
 } from '../../shared/automated-payments.ts'
 import {
   calculateAutomatedPaymentFromDb,
+  buildPaymentCalculationEvidence,
   getPaymentMetadata,
   lockAutomatedPaymentAgreement,
   savePaymentMetadata
@@ -113,20 +114,15 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
         {
           releaseHoldback: extensionPayload.releaseHoldback,
           holdbackReleaseAmount: calculation.holdbackReleaseAmount,
-          ...(calculation.enabled ? { calculationEvidence: {
-            version: 1,
-            capturedAt: new Date().toISOString(),
-            input: {
-              fiscalYearId: parsed.data.egcs_fc_fiscalyear,
-              commitmentTypeId: parsed.data.egcs_fc_commitmenttype,
-              paymentType: parsed.data.egcs_fc_paymenttype,
-              periodStart: parsed.data.egcs_fc_periodstart,
-              creditMemoBasis: AutomatedPaymentsAgencyConfigSchema.parse(context.agencyConfig).creditMemoBasis,
-              periodEnd: parsed.data.egcs_fc_periodend,
-              currency: parsed.data.egcs_fc_currency
-            },
-            calculation
-          } } : {})
+          ...(calculation.enabled ? { calculationEvidence: buildPaymentCalculationEvidence({
+            agreementId: context.agreementId,
+            currency: parsed.data.egcs_fc_currency,
+            fiscalYearId: parsed.data.egcs_fc_fiscalyear,
+            commitmentType: parsed.data.egcs_fc_commitmenttype,
+            paymentType: parsed.data.egcs_fc_paymenttype,
+            periodStart: parsed.data.egcs_fc_periodstart,
+            periodEnd: parsed.data.egcs_fc_periodend
+          }, calculation, AutomatedPaymentsAgencyConfigSchema.parse(context.agencyConfig).creditMemoBasis) } : {})
         }
       )
       return { status: 'continue' }
@@ -170,7 +166,15 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
   registerGcsExtensionAgreementPaymentMutationGuard(EXTENSION_KEY, async context => {
     const db = context.db as Transaction<Record<string, Record<string, unknown>>>
     await lockAutomatedPaymentAgreement(db, context.agreementId)
-    if (context.operation !== 'payment.update' || !context.agencyEnabled) return
+    if (context.operation !== 'payment.update') return
+    const refreshEvidence = ['egcs_fc_commitmenttype', 'egcs_fc_fiscalyear', 'egcs_fc_paymenttype',
+      'egcs_fc_applicantrecipient', 'egcs_fc_periodstart', 'egcs_fc_periodend', 'egcs_fc_paymentamount',
+      'egcs_fc_currency', 'egcs_fc_fundingagreementcommitment', 'egcs_fc_offsetplanhash', 'egcs_fc_offsetcreditmemos']
+      .some(key => context.changes?.[key] !== undefined)
+    if (!context.agencyEnabled) {
+      if (refreshEvidence) await savePaymentMetadata(db, context.paymentId, await getPaymentMetadata(db, context.paymentId))
+      return
+    }
     const payment = await db
       .selectFrom('Funding_Case_Agreement_Payment')
       .innerJoin(
@@ -219,10 +223,13 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
       .where('enabled', '=', true)
       .where('_deleted', '=', false)
       .executeTakeFirst() as { config?: unknown } | undefined
-    if (!streamConfig) return
+    if (!streamConfig) {
+      if (refreshEvidence) await savePaymentMetadata(db, context.paymentId, await getPaymentMetadata(db, context.paymentId))
+      return
+    }
 
     const metadata = await getPaymentMetadata(db, context.paymentId)
-    const calculation = await calculateAutomatedPaymentFromDb(db, {
+    const nextInput = {
       agreementId: context.agreementId,
       currency: AutomatedPaymentCurrencySchema.parse(changes.egcs_fc_currency ?? payment.egcs_fc_currency),
       commitmentType: String(nextCommitment.commitment_type),
@@ -236,12 +243,20 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
       releaseHoldback: metadata.releaseHoldback,
       holdbackReleaseAmount: metadata.holdbackReleaseAmount,
       excludePaymentId: context.paymentId
-    }, streamConfig.config, requireGcsExtensionAgreementFinancials(context), context.agencyConfig)
+    }
+    const calculation = await calculateAutomatedPaymentFromDb(db, nextInput, streamConfig.config, requireGcsExtensionAgreementFinancials(context), context.agencyConfig)
     const nextAmount = changes.egcs_fc_paymentamount === undefined
       ? parseDatabaseMoney(payment.egcs_fc_paymentamount)
       : parseAutomatedPaymentMoney(changes.egcs_fc_paymentamount as string | number)
     if (calculation.enabled && compareAutomatedPaymentMoney(nextAmount, calculation.ceilingAmount) > 0) {
       throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING', 'egcs_fc_paymentamount')
     }
+    if (!refreshEvidence) return
+    await savePaymentMetadata(db, context.paymentId, {
+      releaseHoldback: metadata.releaseHoldback,
+      holdbackReleaseAmount: calculation.enabled ? calculation.holdbackReleaseAmount : metadata.holdbackReleaseAmount,
+      ...(calculation.enabled ? { calculationEvidence: buildPaymentCalculationEvidence(nextInput, calculation,
+        AutomatedPaymentsAgencyConfigSchema.parse(context.agencyConfig).creditMemoBasis) } : {})
+    })
   }, nitroApp as Parameters<typeof registerGcsExtensionAgreementPaymentMutationGuard>[2])
 })

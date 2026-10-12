@@ -1,3 +1,4 @@
+import { AutomatedPaymentCalculationEvidenceSchema } from '../../shared/automated-payments'
 import { describe, expect, it, vi } from 'vitest'
 import { createGcsExtensionUserError } from '@gcs-ssc/extensions/server'
 import { calculateAutomatedPaymentFromDb, getPaymentMetadata, getPaymentCalculationEvidence, savePaymentMetadata, lockAutomatedPaymentAgreement } from '../../server/calculation-data'
@@ -109,6 +110,30 @@ describe('host financial inputs and extension calculation and retained evidence'
   it.each([{ ...evidence, version: 2 }, { ...evidence, calculation: { ...evidence.calculation, baseAmount: '1e9' } }])('rejects corrupt or unsupported authored evidence %j', async snapshot => {
     const { db } = queryDb({ value: { calculationEvidence: snapshot } })
     await expect(getPaymentCalculationEvidence(db as never, '90')).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_EVIDENCE_INVALID' })
+  })
+  it('retains version-2 arithmetic and exact percentages after live financial inputs change', async () => {
+    const financials = { getPaymentCalculation: vi.fn(async () => hostCalculation) }
+    const calculation = await calculateAutomatedPaymentFromDb({} as never, { ...input, excludePaymentId: '90' }, {}, financials, agencyConfig)
+    const snapshot = { version: 2, capturedAt: evidence.capturedAt,
+      input: { ...evidence.input, periodStart: 1, creditMemoBasis: 'reconciled-periods' }, calculation }
+    const { db } = queryDb({ value: { calculationEvidence: snapshot } })
+    financials.getPaymentCalculation.mockResolvedValue({ ...hostCalculation, totalPaymentsToDate: '9999.00' })
+    const saved = await getPaymentCalculationEvidence(db as never, '90')
+    expect(saved).toEqual(snapshot)
+    expect(financials.getPaymentCalculation).toHaveBeenCalledTimes(1)
+    expect(calculation.explanation![1]!.rows[1]).toEqual({ label: 'explanation.holdback_rate', value: '10.00', operator: '×', format: 'percent' })
+    expect(calculation.explanation!.at(-1)!.notes).toEqual(['explanation.limited_commitment'])
+    const invalid = [
+      { ...snapshot, input: { ...snapshot.input, fiscalYearId: '0' } },
+      { ...snapshot, input: { ...snapshot.input, commitmentTypeId: '9223372036854775808' } },
+      { ...snapshot, input: { ...snapshot.input, periodStart: 5 } },
+      { ...snapshot, calculation: { ...calculation, currency: 'CAD' } },
+      ...['101.00', '-0.01', '10', 10].map(value => ({ ...snapshot, calculation: { ...calculation,
+        explanation: [{ ...calculation.explanation![1], rows: [{ label: 'explanation.holdback_rate', value, format: 'percent' }] }] } })),
+      { ...snapshot, calculation: { ...calculation, explanation: [{ ...calculation.explanation![0], label: 'host.private_label' }] } },
+      { ...snapshot, calculation: { ...calculation, explanation: [] } }
+    ]
+    for (const value of invalid) expect(AutomatedPaymentCalculationEvidenceSchema.safeParse(value).success).toBe(false)
   })
   it('reads the persisted snapshot without a live calculation', async () => {
     const snapshot = { ...evidence, calculation: { ...evidence.calculation, details: [

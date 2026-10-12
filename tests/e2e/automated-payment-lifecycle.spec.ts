@@ -7,7 +7,7 @@ import { runPaymentEmptyFinalFiscalYearJourney } from './payment-empty-final-fy-
 
 const baseUrl = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000'
 
-test.use({ actionTimeout: 20_000 })
+test.use({ actionTimeout: 20_000, deviceScaleFactor: 3 })
 
 const login = async (page: Page, email: string, password: string): Promise<void> => {
   await page.goto(`${baseUrl}/en/login`)

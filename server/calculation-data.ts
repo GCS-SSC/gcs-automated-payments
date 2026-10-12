@@ -6,7 +6,7 @@ import {
   AutomatedPaymentsAgencyConfigSchema,
   parseAutomatedPaymentExtensionPayload, parseAutomatedPaymentsStreamConfig,
   parseAutomatedPaymentMoney,
-  type AutomatedPaymentMoney, type AutomatedPaymentMoneyInput, type AutomatedPaymentCalculationResult
+  type AutomatedPaymentMoney, type AutomatedPaymentMoneyInput, type AutomatedPaymentCalculationResult, type AutomatedPaymentCreditMemoBasis
 } from '../shared/automated-payments.ts'
 import { AutomatedPaymentCalculationEvidenceSchema, type AutomatedPaymentCalculationEvidence } from '../shared/automated-payments.ts'
 import { calculateAutomatedPaymentValues } from './payment-calculation.ts'
@@ -29,6 +29,20 @@ export interface AutomatedPaymentServerInput {
   excludePaymentId?: string
 }
 export interface AutomatedPaymentServerCalculation extends AutomatedPaymentCalculationResult { enabled: boolean }
+
+/** Retains the extension's exact arithmetic basis for an authorized Payment save. */
+export const buildPaymentCalculationEvidence = (
+  input: AutomatedPaymentServerInput,
+  calculation: AutomatedPaymentServerCalculation,
+  creditMemoBasis: AutomatedPaymentCreditMemoBasis
+) => ({
+  version: 2,
+  capturedAt: new Date().toISOString(),
+  input: { fiscalYearId: input.fiscalYearId, commitmentTypeId: input.commitmentType,
+    paymentType: input.paymentType, periodStart: input.periodStart, periodEnd: input.periodEnd,
+    currency: AutomatedPaymentCurrencySchema.parse(input.currency), creditMemoBasis },
+  calculation
+})
 
 /** Serializes ceiling-affecting payment mutations for one Agreement. */
 export const lockAutomatedPaymentAgreement = async (db: Db, agreementId: string): Promise<void> => {

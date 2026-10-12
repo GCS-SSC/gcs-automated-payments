@@ -82,7 +82,7 @@ export interface AutomatedPaymentCalculationResult {
 
 const CalculationEvidenceMoneySchema = z.string().regex(/^-?(?:0|[1-9]\d*)\.\d{2}$/)
   .transform(parseAutomatedPaymentAggregateMoney)
-export const AutomatedPaymentCalculationEvidenceSchema = z.object({
+const CalculationEvidenceV1Schema = z.object({
   version: z.literal(1),
   capturedAt: z.iso.datetime(),
   input: z.object({
@@ -104,7 +104,6 @@ export const AutomatedPaymentCalculationEvidenceSchema = z.object({
     }))
   })
 })
-export type AutomatedPaymentCalculationEvidence = z.infer<typeof AutomatedPaymentCalculationEvidenceSchema>
 
 const defaultConfig: AutomatedPaymentsStreamConfig = { enabledPaymentTypes: ['reimbursement', 'advance'] }
 const defaultPayload: AutomatedPaymentExtensionPayload = { releaseHoldback: false, holdbackReleaseAmount: ZERO_AUTOMATED_PAYMENT_MONEY }
@@ -116,6 +115,45 @@ export const AutomatedPaymentPositiveBigintIdSchema = z.preprocess(value => {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
   return value
 }, z.string().refine(positiveBigint))
+const ExplanationLabelSchema = z.enum([
+  'explanation.claims', 'explanation.forecast', 'explanation.claimed_forecast', 'explanation.paid',
+  'credit_memo_basis.all', 'credit_memo_basis.reconciled_periods', 'explanation.funding',
+  'explanation.unreconciled_credits', 'explanation.reserved', 'explanation.released',
+  'explanation.payment_calculation', 'explanation.holdback', 'explanation.final_year',
+  'explanation.agreement_total', 'explanation.holdback_rate', 'explanation.full_holdback',
+  'explanation.available_funds', 'explanation.payment_limits', 'explanation.commitment',
+  'explanation.single_payment', 'explanation.maximum'
+])
+const ExplanationNoteSchema = z.enum([
+  'explanation.nothing_payable', 'explanation.reserve_limited', 'explanation.rounded',
+  'explanation.credit_policy', 'explanation.availability_zero', 'explanation.release_limited',
+  'explanation.limited_payment', 'explanation.limited_calculation',
+  'explanation.limited_commitment', 'explanation.limited_funding'
+])
+const CalculationEvidenceV2Schema = CalculationEvidenceV1Schema.extend({
+  version: z.literal(2),
+  input: CalculationEvidenceV1Schema.shape.input.extend({
+    fiscalYearId: z.string().refine(positiveBigint), commitmentTypeId: z.string().refine(positiveBigint),
+    periodStart: z.number().int().min(0).max(11), creditMemoBasis: AutomatedPaymentCreditMemoBasisSchema
+  }).refine(value => value.periodStart <= value.periodEnd),
+  calculation: CalculationEvidenceV1Schema.shape.calculation.extend({
+    enabled: z.literal(true),
+    explanation: z.array(z.object({
+      label: ExplanationLabelSchema,
+      rows: z.array(z.object({
+        label: ExplanationLabelSchema, value: CalculationEvidenceMoneySchema,
+        operator: z.enum(['+', '−', '×']).optional(), format: z.literal('percent').optional()
+      }).refine(row => row.format !== 'percent' || (toCents(row.value) >= BigInt(0) && toCents(row.value) <= BigInt(10000)))).min(1),
+      total: z.object({ label: ExplanationLabelSchema, value: CalculationEvidenceMoneySchema }),
+      notes: z.array(ExplanationNoteSchema).optional(),
+      noteValues: z.object({ reserve: CalculationEvidenceMoneySchema.optional(), requested: CalculationEvidenceMoneySchema.optional(), released: CalculationEvidenceMoneySchema.optional() }).optional(),
+      emphasis: z.boolean().optional()
+    })).min(1)
+  })
+}).refine(value => value.input.currency.toUpperCase() === value.calculation.currency)
+export const AutomatedPaymentCalculationEvidenceSchema = z.discriminatedUnion('version', [CalculationEvidenceV1Schema, CalculationEvidenceV2Schema])
+export type AutomatedPaymentCalculationEvidence = z.infer<typeof AutomatedPaymentCalculationEvidenceSchema>
+
 export const AutomatedPaymentExtensionPayloadSchema = z.object({
   releaseHoldback: z.boolean().default(false),
   holdbackReleaseAmount: z.preprocess(value => value === '' || value === undefined || value === null ? ZERO_AUTOMATED_PAYMENT_MONEY : value, AutomatedPaymentMoneySchema.default(ZERO_AUTOMATED_PAYMENT_MONEY))

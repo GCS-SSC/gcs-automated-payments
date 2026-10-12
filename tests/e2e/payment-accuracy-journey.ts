@@ -9,6 +9,7 @@ type Calculation = {
   currency: string; suggestedAmount: string; ceilingAmount: string; baseAmount: string; holdbackAmount: string
   holdbackReleaseAmount: string; availableBeforeHoldback: string
   details: Array<{ label: string; value: string }>
+  explanation?: Array<{ rows: Array<{ value: string; format?: string }>; total: { value: string } }>
 }
 type Helpers = {
   login: (page: Page, email: string, password: string) => Promise<void>
@@ -505,7 +506,22 @@ export const runPaymentAccuracyJourney = async (
     await post(page, `${agreementBase}/payment-lines`, {
       egcs_fc_fundingagreementpayment: created.id, egcs_fc_fundingagreementcommitmentline: commitmentLine.id, egcs_fc_amount: requested
     })
+    const draftEvidence = await read<{ egcs_fc_evidence: { capturedAt: string; selection: unknown; financialInputs: unknown } }>(page,
+      `${agreementBase}/payments/${created.id}`)
+    if (scenario === '01_initial_advance') {
+      const refresh = await page.request.patch(`${agreementBase}/payments/${created.id}`, {
+        data: { egcs_fc_paymentamount: requested }
+      })
+      expect(refresh.ok(), await refresh.text()).toBe(true)
+      const refreshed = await read<typeof draftEvidence>(page, `${agreementBase}/payments/${created.id}`)
+      expect(refreshed.egcs_fc_evidence.capturedAt).not.toBe(draftEvidence.egcs_fc_evidence.capturedAt)
+      expect(refreshed.egcs_fc_evidence.selection).toEqual(draftEvidence.egcs_fc_evidence.selection)
+      expect(refreshed.egcs_fc_evidence.financialInputs).toEqual(draftEvidence.egcs_fc_evidence.financialInputs)
+    }
+    const evidenceBeforeCompletion = await read<typeof draftEvidence>(page, `${agreementBase}/payments/${created.id}`)
     await complete('fundingcasepayment', created.id)
+    const evidenceAfterCompletion = await read<typeof draftEvidence>(page, `${agreementBase}/payments/${created.id}`)
+    expect(evidenceAfterCompletion.egcs_fc_evidence).toEqual(evidenceBeforeCompletion.egcs_fc_evidence)
     const auditedScenario = scenarios.find(row => row.scenario_id === scenario)!
     auditedScenario.selected_payment = requested
     auditedScenario.created_payment_id = created.id
@@ -515,10 +531,10 @@ export const runPaymentAccuracyJourney = async (
     await page.goto(`/en/agreements/${owner.agreementId}/payments/${created.id}`)
     await expect(page.getByRole('tab', { name: 'Payment completion', exact: true })).toBeVisible()
     await expect(page.getByText(new RegExp(`\\$${requested.replace('.', '\\.')}\\b`)).first()).toBeVisible()
-    await page.getByRole('tab', { name: 'Payment calculation', exact: true }).click()
+    await page.getByRole('tab', { name: 'Payment evidence', exact: true }).click()
     const retained = page.getByTestId('payment-calculation-evidence')
-    await expect(retained.getByText(/Calculation retained when this payment was created/)).toBeVisible()
-    await expect(page.getByRole('heading', { level: 2, name: 'Payment calculation', exact: true })).toHaveCount(1)
+    await expect(retained.getByText(/Payment calculated on/)).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Payment evidence', exact: true })).toHaveCount(1)
     await expect(retained.getByRole('heading', { level: 3, name: 'Calculation details', exact: true })).toHaveCount(1)
     await expect(page.getByTestId('detail-section')).toHaveAttribute('data-section-width', 'full')
     expect(await page.getByTestId('detail-section').evaluate(section => getComputedStyle(section).maxWidth)).toBe('none')
@@ -529,7 +545,7 @@ export const runPaymentAccuracyJourney = async (
       await page.goto(bookmark.toString())
       for (const visit of ['bookmark', 'reload']) {
         if (visit === 'reload') await page.reload()
-        await expect(retained.getByText(/Calculation retained when this payment was created/)).toBeVisible()
+        await expect(retained.getByText(/Payment calculated on/)).toBeVisible()
         expect(new URL(page.url()).searchParams.get('section'), visit).toBe(bookmark.searchParams.get('section'))
         expect(new URL(page.url()).searchParams.get('trace')).toBe('evidence')
         expect(new URL(page.url()).hash).toBe('#snapshot')
@@ -540,7 +556,7 @@ export const runPaymentAccuracyJourney = async (
       mobileBookmark.pathname = `/fr/ententes/${owner.agreementId}/paiements/${created.id}`
       await page.setViewportSize({ width: 320, height: 844 })
       await page.goto(mobileBookmark.toString())
-      await expect(retained.getByText(/création de ce paiement/)).toBeVisible()
+      await expect(retained.getByText(/Paiement calculé le/)).toBeVisible()
       await expect(retained.getByRole('heading', { level: 3, name: 'Détails du calcul', exact: true })).toHaveCount(1)
       const bounds = await retained.locator('dd').evaluateAll(elements => elements.map(element => {
         const box = element.getBoundingClientRect()
@@ -548,7 +564,7 @@ export const runPaymentAccuracyJourney = async (
         return { left: box.left, right: box.right, sectionLeft: section.left, sectionRight: section.right,
           overflow: element.scrollWidth > element.clientWidth }
       }))
-      expect(bounds).toHaveLength(10)
+      expect(bounds.length).toBeGreaterThan(4)
       for (const bound of bounds) {
         expect(bound.left).toBeGreaterThanOrEqual(bound.sectionLeft)
         expect(bound.right).toBeLessThanOrEqual(bound.sectionRight)
@@ -558,12 +574,37 @@ export const runPaymentAccuracyJourney = async (
       await page.screenshot({ path: testInfo.outputPath('payment-evidence-fr-mobile320.png'), fullPage: true })
       await page.setViewportSize(viewport)
       await page.goto(bookmark.toString())
-      await expect(retained.getByText(/Calculation retained when this payment was created/)).toBeVisible()
+      await expect(retained.getByText(/Payment calculated on/)).toBeVisible()
     }
+    const saved = await read<{ evidence: { version: number; calculation: Calculation } }>(page,
+      `/api/extensions/gcs-automated-payments/payments/${created.id}/calculation-evidence`)
+    expect(saved.evidence.version).toBe(2)
+    expect(saved.evidence.calculation.details).toEqual(actual.details)
+    expect(saved.evidence.calculation.explanation).toEqual(actual.explanation)
+    await expect(retained.locator('details')).toHaveCount(0)
+    const expectedRows = actual.explanation!.flatMap(step => [...step.rows, step.total])
     const retainedAmounts = retained.locator('dd')
-    await expect(retainedAmounts).toHaveCount(10)
-    for (const [index, detail] of actual.details.entries()) {
-      expect((await retainedAmounts.nth(index).innerText()).replace(/[^\d.-]/g, '')).toBe(detail.value)
+    await expect(retainedAmounts).toHaveCount(expectedRows.length)
+    for (const [index, row] of expectedRows.entries()) {
+      const text = (await retainedAmounts.nth(index).innerText()).replace(/[^\d.-]/g, '')
+      expect(text).toBe('format' in row && row.format === 'percent' ? row.value.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '') : row.value)
+    }
+    await expect(page.getByTestId('payment-evidence').locator('details, [aria-expanded]')).toHaveCount(0)
+    if (scenario === '01_initial_advance') {
+      const reportDir = join(import.meta.dirname, '../../../../.agent/reports')
+      await mkdir(reportDir, { recursive: true })
+      const screenshotViewport = page.viewportSize()!
+      await page.setViewportSize({ width: 1440, height: 2200 })
+      const evidencePage = page.getByTestId('payment-evidence')
+      for (const name of ['Calculation details', 'Financial inputs', 'Commitment lines']) {
+        await expect(evidencePage.getByRole('heading', { name, exact: true })).toBeInViewport()
+      }
+      await expect(page.getByTestId('payment-evidence-balances').locator('dd').last()).toBeInViewport()
+      await page.screenshot({ path: join(reportDir, 'payment-evidence-completed.png'), fullPage: true, scale: 'device' })
+      await retained.screenshot({ path: join(reportDir, 'payment-evidence-calculation-hires.png'), scale: 'device' })
+      await page.getByTestId('payment-evidence-inputs').screenshot({ path: join(reportDir, 'payment-evidence-inputs-hires.png'), scale: 'device' })
+      await page.getByTestId('payment-evidence-balances').screenshot({ path: join(reportDir, 'payment-evidence-balances-hires.png'), scale: 'device' })
+      await page.setViewportSize(screenshotViewport)
     }
     await page.screenshot({ path: testInfo.outputPath(`${scenario}.png`), fullPage: true })
   }

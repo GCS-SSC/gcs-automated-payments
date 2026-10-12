@@ -26,7 +26,8 @@ vi.mock('@gcs-ssc/extensions/server', () => ({
     registerGcsExtensionCreateOperationHandlerMock(...args)
 }))
 
-vi.mock('../../server/calculation-data', () => ({
+vi.mock('../../server/calculation-data', async importOriginal => ({
+  ...await importOriginal<typeof import('../../server/calculation-data')>(),
   calculateAutomatedPaymentFromDb: (...args: unknown[]) => calculateAutomatedPaymentFromDbMock(...args),
   getPaymentMetadata: (...args: unknown[]) => getPaymentMetadataMock(...args),
   lockAutomatedPaymentAgreement: (...args: unknown[]) => lockAutomatedPaymentAgreementMock(...args),
@@ -66,7 +67,8 @@ describe('gcs automated payments create hooks', () => {
     calculateAutomatedPaymentFromDbMock.mockResolvedValue({
       enabled: true,
       ceilingAmount: '100.00',
-      holdbackReleaseAmount: '8.00'
+      holdbackReleaseAmount: '8.00',
+      explanation: [{ label: 'explanation.maximum', rows: [{ label: 'explanation.commitment', value: '100.00' }], total: { label: 'explanation.maximum', value: '100.00' }, notes: ['explanation.limited_commitment'], emphasis: true }]
     })
     getPaymentMetadataMock.mockResolvedValue({ releaseHoldback: true, holdbackReleaseAmount: '12.00' })
   })
@@ -252,7 +254,7 @@ describe('gcs automated payments create hooks', () => {
     expect(savePaymentMetadataMock).toHaveBeenCalledWith(trx, 'payment-1', {
       releaseHoldback: true,
       holdbackReleaseAmount: '8.00',
-      calculationEvidence: expect.objectContaining({ version: 1, capturedAt: expect.any(String), input: expect.objectContaining({ periodStart: 1, periodEnd: 3, creditMemoBasis: 'reconciled-periods' }), calculation: expect.objectContaining({ holdbackReleaseAmount: '8.00' }) })
+      calculationEvidence: expect.objectContaining({ version: 2, capturedAt: expect.any(String), input: expect.objectContaining({ periodStart: 1, periodEnd: 3, creditMemoBasis: 'reconciled-periods' }), calculation: expect.objectContaining({ holdbackReleaseAmount: '8.00', explanation: [expect.objectContaining({ total: { label: 'explanation.maximum', value: '100.00' }, notes: ['explanation.limited_commitment'] })] }) })
     })
   })
 
@@ -320,6 +322,7 @@ describe('gcs automated payments create hooks', () => {
         egcs_fc_paymentamount: '50.01'
       }
     })).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING' })
+    expect(savePaymentMetadataMock).not.toHaveBeenCalled()
     expect(getPaymentMetadataMock).toHaveBeenCalledWith(db, 'payment-1')
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(db, expect.objectContaining({
       commitmentType: 'type-2',
@@ -340,10 +343,18 @@ describe('gcs automated payments create hooks', () => {
       db, agreementId: '1', paymentId: '1', changes: { egcs_fc_paymentamount: '50.00' } })).resolves.toBeUndefined()
     expect(lockAutomatedPaymentAgreementMock).toHaveBeenCalledWith(db, '1')
     expect(db.selectFrom).not.toHaveBeenCalled()
-    expect(getPaymentMetadataMock).not.toHaveBeenCalled()
+    expect(getPaymentMetadataMock).toHaveBeenCalledWith(db, '1')
+    expect(savePaymentMetadataMock).toHaveBeenCalledWith(db, '1', { releaseHoldback: true, holdbackReleaseAmount: '12.00' })
     expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
   })
 
+  it('does not discard retained evidence for an unrelated disabled comment edit', async () => {
+    await loadHandler()
+    const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as (context: Record<string, unknown>) => Promise<void>
+    await guard({ operation: 'payment.update', agencyEnabled: false, db: {}, agreementId: '1', paymentId: '1', changes: { egcs_fc_comment: 'Note' } })
+    expect(getPaymentMetadataMock).not.toHaveBeenCalled()
+    expect(savePaymentMetadataMock).not.toHaveBeenCalled()
+  })
   it('still rejects Payment updates when Agency automation is enabled without a credit choice', async () => {
     await loadHandler()
     const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as (context: Record<string, unknown>) => Promise<void>
@@ -392,8 +403,10 @@ describe('gcs automated payments create hooks', () => {
       operation, agencyEnabled: true, agencyConfig,
       db,
       agreementId: 'agreement-1',
-      paymentId: 'payment-1'
+      paymentId: 'payment-1',
+      changes: { egcs_fc_paymentamount: '50.00' }
     })).resolves.toBeUndefined()
+    if (responses.length === 3) expect(savePaymentMetadataMock).toHaveBeenCalledWith(db, 'payment-1', { releaseHoldback: true, holdbackReleaseAmount: '12.00' })
     expect(lockAutomatedPaymentAgreementMock).toHaveBeenCalledWith(db, 'agreement-1')
     expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
   })
@@ -452,8 +465,14 @@ describe('gcs automated payments create hooks', () => {
       operation: 'payment.update', agencyEnabled: true, agencyConfig,
       db,
       agreementId: 'agreement-1',
-      paymentId: 'payment-1'
+      paymentId: 'payment-1',
+      changes: { egcs_fc_paymentamount: '50.00' }
     })).resolves.toBeUndefined()
+    expect(savePaymentMetadataMock).toHaveBeenCalledWith(db, 'payment-1', expect.objectContaining({
+      releaseHoldback: true, holdbackReleaseAmount: '0.00',
+      calculationEvidence: expect.objectContaining({ version: 2, input: expect.objectContaining({ fiscalYearId: 'fy-1', periodStart: 1, periodEnd: 3 }),
+        calculation: expect.objectContaining({ ceilingAmount: '50.00' }) })
+    }))
   })
 
   it('calculates USD creation and saves existing release metadata without replacing the native currency', async () => {

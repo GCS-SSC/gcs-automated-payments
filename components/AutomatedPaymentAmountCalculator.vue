@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatCalculationExplanation, formatCalculationMoney } from '../shared/calculation-explanation'
 import { messages } from '../i18n/messages'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { Ref } from 'vue'
@@ -125,37 +126,10 @@ const readErrorMessage = async (response: Response): Promise<string> => {
  * @param value Canonical money.
  * @returns The localized amount and currency.
  */
-const formatMoney = (value: AutomatedPaymentMoney) => {
-  const [integer = '0', fraction = '00'] = value.split('.')
-  const negative = integer.startsWith('-')
-  const digits = negative ? integer.slice(1) : integer
-  const isFrench = locale.value === 'fr'
-  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, isFrench ? '\u00a0' : ',')
-  const amount = `${grouped}${isFrench ? ',' : '.'}${fraction}`
-  const currency = calculation.value?.currency ?? selectedCurrency.value?.toUpperCase() ?? ''
-  return isFrench ? `${negative ? '-' : ''}${amount}\u00a0$ ${currency}` : `${currency} ${negative ? '-' : ''}$${amount}`
-}
+const formatMoney = (value: AutomatedPaymentMoney) => formatCalculationMoney(value,
+  calculation.value?.currency ?? selectedCurrency.value?.toUpperCase() ?? '', locale.value)
 
-const calculationExplanation = computed(() => calculation.value?.explanation?.map(step => ({
-  label: t(step.label as keyof typeof messages.en),
-  rows: step.rows.map(row => {
-    const percentage = row.value.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
-    const value = row.format === 'percent'
-      ? `${locale.value === 'fr' ? percentage.replace('.', ',') : percentage}%`
-      : formatMoney(row.value)
-    return {
-      label: t(row.label as keyof typeof messages.en),
-      value: row.operator && row.value.startsWith('-') ? `(${value})` : value,
-      ...(row.operator ? { operator: row.operator } : {})
-    }
-  }),
-  total: { label: t(step.total.label as keyof typeof messages.en), value: formatMoney(step.total.value) },
-  ...(step.notes?.length
-    ? { note: step.notes.map(key => t(key as keyof typeof messages.en,
-        Object.fromEntries(Object.entries(step.noteValues ?? {}).map(([name, value]) => [name, formatMoney(value)])))).join(' ') }
-    : {}),
-  ...(step.emphasis ? { emphasis: true } : {})
-})) ?? [])
+const calculationExplanation = computed(() => formatCalculationExplanation(calculation.value?.explanation, locale.value, t, formatMoney))
 
 const serializedHoldbackReleaseAmount = computed(() => {
   if (!releaseHoldback.value || holdbackReleaseAmount.value === '') {

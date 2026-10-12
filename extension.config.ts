@@ -10,7 +10,7 @@ export default defineGcsExtension({
     'agency-config',
     'stream-config-modal',
     'payment-amount-calculators',
-    'entity-tabs',
+    'payment-evidence',
     'agreement-payment-capacity',
     'server-handlers',
     'server-handler-rbac',
@@ -37,11 +37,8 @@ export default defineGcsExtension({
     }
   },
   client: {
-    tabs: [{
-      target: 'payment', id: 'calculation-evidence',
-      label: { en: 'Payment calculation', fr: 'Calcul du paiement' },
-      icon: 'i-lucide-calculator', path: './components/PaymentCalculationEvidence.vue',
-      rbac: { subject: 'agreement', action: 'read' }
+    slots: [{
+      slot: 'payment.evidence', path: './components/PaymentCalculationEvidence.vue'
     }],
     paymentAmountCalculators: [
       {

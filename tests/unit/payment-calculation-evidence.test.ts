@@ -3,14 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h, ref } from 'vue'
 import PaymentCalculationEvidence from '../../components/PaymentCalculationEvidence.vue'
-import extension from '../../extension.config'
+import { AutomatedPaymentCalculationEvidenceSchema } from '../../shared/automated-payments'
 
 const evidence = { version: 1, capturedAt: '2026-10-09T12:00:00.000Z',
   input: { fiscalYearId: '3', commitmentTypeId: '2', paymentType: 'advance', periodEnd: 4, currency: 'usd' },
   calculation: { enabled: true, currency: 'USD', baseAmount: '100.01', ceilingAmount: '90.00', suggestedAmount: '90.00', holdbackAmount: '10.00', holdbackReleaseAmount: '0.00', availableBeforeHoldback: '90.00', details: [{ label: 'baseAmount', value: '100.01' }, { label: 'commitmentRemaining', value: '199999999999999999.98' }, { label: 'totalPaymentsToDate', value: '-0.01' }, { label: 'totalCreditMemos', value: '1000.00' }, { label: 'totalCreditMemosForPayment', value: '500.00' }] } }
-const context = (ownerId = '90') => ({ target: 'payment' as const, ownerId, ownerType: 'fundingcasepayment' as const, agreementId: '1', agencyId: '2', scope: { type: 'agency' as const, agencyId: '2' } })
+const context = (ownerId = '90') => ({ kind: 'payment.evidence' as const, paymentId: ownerId, ownerId, ownerType: 'fundingcasepayment' as const, agreementId: '1', agencyId: '2', scope: { type: 'agency' as const, agencyId: '2' } })
 const render = () => mount(PaymentCalculationEvidence, { props: { extensionKey: 'gcs-automated-payments', context: context(), config: {}, rbac: { subject: 'agreement', action: 'read' } }, global: { stubs: {
   CommonSection: defineComponent({ props: ['title'], setup(props, { slots }) { return () => h('section', [h('h3', props.title as string), slots.default?.()]) } }),
+  CommonPaymentCalculationBreakdown: defineComponent({ props: ['explanation'], setup(props) { return () => h('div', { 'data-testid': 'shared-calculation-breakdown' }, (props.explanation as Array<{ label: string, rows: Array<{ label: string, value: string, operator?: string }>, total: { label: string, value: string }, note?: string }>).map(step => h('section', [h('h4', step.label), ...step.rows.map(row => h('p', `${row.operator ?? ''} ${row.label}: ${row.value}`)), h('strong', `${step.total.label}: ${step.total.value}`), h('p', step.note)]))) } }),
   UButton: defineComponent({ props: ['label'], emits: ['click'], setup(props, { emit }) { return () => h('button', { onClick: () => emit('click') }, props.label as string) } })
 } } })
 const response = (value: unknown) => ({ ok: true, json: async () => ({ evidence: value }) })
@@ -38,7 +39,7 @@ describe('retained Payment calculation view', () => {
     expect(largeAmount.element.parentElement!.classList).toContain('flex-col')
     expect(largeAmount.element.parentElement!.classList).toContain('sm:flex-row')
     expect(wrapper.text()).toContain('-$0.01')
-    expect(wrapper.text()).toContain('Calculation retained when this payment was created')
+    expect(wrapper.text()).toContain('Payment calculated on')
     expect(fetch.mock.calls[0]?.[0]).toContain('/payments/90/calculation-evidence')
     locale.value = 'fr'
     await flushPromises()
@@ -48,7 +49,37 @@ describe('retained Payment calculation view', () => {
     expect(wrapper.findAll('dd')[1]!.text().replace(/[^\d,]/g, '')).toBe('199999999999999999,98')
     expect(wrapper.findAll('dd')[1]!.classes()).toContain('wrap-anywhere')
     expect(wrapper.get('h3').text()).toBe('Détails du calcul')
-    expect(wrapper.text()).toContain('création de ce paiement')
+    expect(wrapper.text()).toContain('Paiement calculé le')
+    wrapper.unmount()
+  })
+  it('displays retained version-2 arithmetic through the same SDK renderer as the wizard without disclosures', async () => {
+    const locale = ref('en')
+    vi.stubGlobal('useI18n', () => ({ locale, t: () => { throw new Error('Host translation unavailable') } }))
+    const snapshot = { ...evidence, version: 2, input: { ...evidence.input, periodStart: 1, creditMemoBasis: 'all' },
+      calculation: { ...evidence.calculation, explanation: [
+        { label: 'explanation.holdback', rows: [
+          { label: 'explanation.agreement_total', value: '100.00' },
+          { label: 'explanation.holdback_rate', value: '10.00', operator: '×', format: 'percent' }
+        ], total: { label: 'explanation.full_holdback', value: '10.00' }, notes: ['explanation.reserve_limited'], noteValues: { reserve: '5.00' } },
+        { label: 'explanation.payment_limits', rows: [{ label: 'explanation.payment_calculation', value: '-0.01', operator: '−' }],
+          total: { label: 'explanation.maximum', value: '90.00' }, notes: ['explanation.limited_funding'], emphasis: true }
+      ] } }
+    expect(AutomatedPaymentCalculationEvidenceSchema.safeParse(snapshot).success).toBe(true)
+    vi.stubGlobal('fetch', vi.fn(async () => response(snapshot)))
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="shared-calculation-breakdown"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('10%')
+    expect(wrapper.text()).toContain('USD $90.00')
+    expect(wrapper.text()).toContain('(USD -$0.01)')
+    expect(wrapper.text()).toContain('USD $5.00')
+    expect(wrapper.find('details').exists()).toBe(false)
+    expect(wrapper.find('[role="button"][aria-expanded]').exists()).toBe(false)
+    locale.value = 'fr'
+    await flushPromises()
+    expect(wrapper.text()).toContain('90,00')
+    expect(wrapper.text()).toContain('Détails du calcul')
+    expect(wrapper.text()).toContain('10%')
     wrapper.unmount()
   })
   it('shows a localized unavailable state for existing payments with no snapshot', async () => {
