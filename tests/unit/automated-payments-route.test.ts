@@ -4,7 +4,7 @@ import type { GcsExtensionRouteEvent } from '@gcs-ssc/extensions/server'
 const agencyConfig = { creditMemoBasis: 'all' }
 const readBodyMock = vi.fn()
 const calculateAutomatedPaymentFromDbMock = vi.fn()
-const financials = { getPaymentCalculation: vi.fn(), getClaimRecoveryProjection:vi.fn(), getRecordedPaidToDate: vi.fn(), getPaidAccountingProjection: vi.fn(), getCommitmentPaymentCapacity: vi.fn(), getCommitmentLinePaymentCoverage: vi.fn(), validatePaymentAllocations: vi.fn() }
+const financials = { getCostAllocationContext: vi.fn(), getPaymentCalculation: vi.fn(), getClaimRecoveryProjection:vi.fn(), getRecordedPaidToDate: vi.fn(), getPaidAccountingProjection: vi.fn(), getCommitmentPaymentCapacity: vi.fn(), getCommitmentLinePaymentCoverage: vi.fn(), validatePaymentAllocations: vi.fn() }
 const validCommitmentTypeId = '9223372036854775807'
 const validFiscalYearId = '1'
 const validBody = {

@@ -844,9 +844,7 @@ test.describe.serial('Automated payment lifecycle', () => {
           egcs_fc_month: month,
           egcs_fc_amount: forecastMonthlyAmount,
           egcs_fc_totalamount: forecastMonthlyAmount,
-          egcs_fc_currency: 'cad',
-          egcs_fc_version: 0,
-          egcs_fc_status: String(inProgressStatusId)
+          egcs_fc_currency: 'cad'
         }
       })
       await expectOk(lineResponse, `Create forecast line ${month}`)
@@ -1059,7 +1057,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     const paidBeforeCorrection = calculationBeforeCorrection.details.find(detail => detail.label === 'totalPaymentsToDate')!.value
     await recordCheckpoint({ scenario: 'lifecycle-07-before-october-correction', fiscalYearId, commitmentType, periodEnd: 6,
       calculation: calculationBeforeCorrection, expectedCommitmentCapacity: capacityBefore, note: 'October cutoff includes the later posted Correction; June cutoff retains its earlier paid totals.' })
-    const allocationBeforeCorrection = await responseJson<unknown>(await page.request.get(`/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`))
+    const allocationBeforeCorrection = await responseJson<{ allocations: unknown; versions: unknown }>(await page.request.get(`/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`))
     const verificationPage = await browser.newPage()
     let postedCorrection: Awaited<ReturnType<typeof postNegativeCorrection>>
     try {
@@ -1076,7 +1074,9 @@ test.describe.serial('Automated payment lifecycle', () => {
       .toBe(subtractAutomatedPaymentMoney(parseAutomatedPaymentMoney(paidBeforeCorrection), parseAutomatedPaymentMoney('1.00')))
     const capacityAfterCorrection = addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('1.00'))
     expect(await readCapacity('lifecycle-09-june-cutoff-after-correction', shiftPaymentAuditMoney(capacityBefore, '1.00'), junePaidBeforeJv)).toBe(capacityAfterCorrection)
-    expect(await responseJson(await page.request.get(`/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`))).toEqual(allocationBeforeCorrection)
+    const allocationAfterCorrection = await responseJson<{ allocations: unknown; versions: unknown }>(await page.request.get(`/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`))
+    expect(allocationAfterCorrection.allocations).toEqual(allocationBeforeCorrection.allocations)
+    expect(allocationAfterCorrection.versions).toEqual(allocationBeforeCorrection.versions)
     await page.goto(`/en/agreements/${target.agreementId}/corrections/${postedCorrection.id}`)
     await expect(page.getByRole('tab', { name: 'Correction Completion', exact: true })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('posted-correction-automated-paid-to-date.png'), fullPage: true })

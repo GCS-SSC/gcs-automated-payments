@@ -285,12 +285,12 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       await reject(currency, 'agreement-forecast-currency-mismatch', `${agreementBase}/forecast-line-items`, {
         egcs_fc_agreementforecast: forecast.id, egcs_fc_fundingagreementbudgetlineitem: currency === 'cad' ? budgetLine.id : usdBudgetLine.id,
         egcs_fc_month: 3, egcs_fc_amount: '0.01', egcs_fc_totalamount: '0.01',
-        egcs_fc_currency: currency === 'cad' ? 'usd' : 'cad', egcs_fc_version: 0
+        egcs_fc_currency: currency === 'cad' ? 'usd' : 'cad'
       })
       for (const [month, value] of forecasts[currency].entries()) {
         const line = await post(page, `${agreementBase}/forecast-line-items`, {
           egcs_fc_agreementforecast: forecast.id, egcs_fc_fundingagreementbudgetlineitem: currency === 'cad' ? budgetLine.id : usdBudgetLine.id,
-          egcs_fc_month: month, egcs_fc_amount: value, egcs_fc_totalamount: value, egcs_fc_currency: currency, egcs_fc_version: 0
+          egcs_fc_month: month, egcs_fc_amount: value, egcs_fc_totalamount: value, egcs_fc_currency: currency
         })
         record(currency, 'forecast', line.id, month, value)
       }

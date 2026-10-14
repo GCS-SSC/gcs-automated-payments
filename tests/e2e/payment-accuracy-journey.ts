@@ -334,7 +334,7 @@ export const runPaymentAccuracyJourney = async (
   for (const [month, amount] of forecasts.entries()) {
     await post(page, `${agreementBase}/forecast-line-items`, {
       egcs_fc_agreementforecast: forecast.id, egcs_fc_fundingagreementbudgetlineitem: budgetLine.id,
-      egcs_fc_month: month, egcs_fc_amount: amount, egcs_fc_totalamount: amount, egcs_fc_currency: 'cad', egcs_fc_version: 0
+      egcs_fc_month: month, egcs_fc_amount: amount, egcs_fc_totalamount: amount, egcs_fc_currency: 'cad'
     })
   }
   await complete('fundingcaseforecast', forecast.id)

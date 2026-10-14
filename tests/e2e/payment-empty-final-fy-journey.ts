@@ -64,7 +64,7 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
     const forecast = await post(page, `${agreementBase}/forecasts`, { egcs_fc_fiscalyear: fiscalYear.id })
     const forecastLine = await post(page, `${agreementBase}/forecast-line-items`, {
       egcs_fc_agreementforecast: forecast.id, egcs_fc_fundingagreementbudgetlineitem: budgetLine.id,
-      egcs_fc_month: 0, egcs_fc_amount: '1000.05', egcs_fc_totalamount: '1000.05', egcs_fc_currency: 'cad', egcs_fc_version: 0
+      egcs_fc_month: 0, egcs_fc_amount: '1000.05', egcs_fc_totalamount: '1000.05', egcs_fc_currency: 'cad'
     })
     await complete('fundingcaseforecast', forecast.id)
     const enabled = await page.request.patch(`/api/extensions/streams/${owner.streamId}`, { data: {
