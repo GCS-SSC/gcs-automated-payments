@@ -1,3 +1,5 @@
+import { translateGcsExtensionMessage } from '@gcs-ssc/extensions'
+import { errorMessages } from '../i18n/errors'
 import {
   createGcsExtensionUserError,
   type GcsExtensionLocalizedMessage,
@@ -26,81 +28,6 @@ type AutomatedPaymentErrorCode =
   | 'GCS_AUTOMATED_PAYMENTS_EVIDENCE_INVALID'
   | 'GCS_AUTOMATED_PAYMENTS_CREDIT_MEMO_BASIS_REQUIRED'
 
-const automatedPaymentErrorMessages: Record<AutomatedPaymentErrorCode, GcsExtensionLocalizedMessage> = {
-  GCS_AUTOMATED_PAYMENTS_CREDIT_MEMO_BASIS_REQUIRED: {
-    en: 'Choose which credit memos to use in the agency’s Automated payments extension settings before calculating payments.',
-    fr: 'Choisissez les notes de crédit à utiliser dans les paramètres de l’extension Paiements automatisés de l’organisme avant de calculer les paiements.'
-  },
-  GCS_AUTOMATED_PAYMENTS_EVIDENCE_INVALID: {
-    en: 'The retained payment calculation is invalid or uses an unsupported version.',
-    fr: 'Le calcul conservé du paiement est invalide ou utilise une version non prise en charge.'
-  },
-  GCS_AUTOMATED_PAYMENTS_AGREEMENT_REQUIRED: {
-    en: 'An agreement is required before calculating an automated payment.',
-    fr: 'Une entente est requise avant de calculer un paiement automatise.'
-  },
-  GCS_AUTOMATED_PAYMENTS_INVALID_CALCULATION_INPUT: {
-    en: 'Review the payment fields before calculating the automated payment.',
-    fr: 'Verifiez les champs du paiement avant de calculer le paiement automatise.'
-  },
-  GCS_AUTOMATED_PAYMENTS_COMMITMENT_TYPE_REQUIRED: {
-    en: 'Select a commitment type before calculating the automated payment.',
-    fr: 'Selectionnez un type d engagement avant de calculer le paiement automatise.'
-  },
-  GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_REQUIRED: {
-    en: 'Select a fiscal year before calculating the automated payment.',
-    fr: 'Selectionnez un exercice financier avant de calculer le paiement automatise.'
-  },
-  GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_UNAVAILABLE: {
-    en: 'The selected fiscal year is not available for this agreement.',
-    fr: 'L exercice financier selectionne n est pas disponible pour cette entente.'
-  },
-  GCS_AUTOMATED_PAYMENTS_PAYMENT_TYPE_REQUIRED: {
-    en: 'Select a payment type before calculating the automated payment.',
-    fr: 'Selectionnez un type de paiement avant de calculer le paiement automatise.'
-  },
-  GCS_AUTOMATED_PAYMENTS_PERIOD_START_INVALID: {
-    en: 'Select a valid period start month.',
-    fr: 'Selectionnez un mois de debut de periode valide.'
-  },
-  GCS_AUTOMATED_PAYMENTS_PERIOD_END_INVALID: {
-    en: 'Select a valid period end month.',
-    fr: 'Selectionnez un mois de fin de periode valide.'
-  },
-  GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID: {
-    en: 'Period end must be the same as or after period start.',
-    fr: 'La periode de fin doit etre identique ou posterieure a la periode de debut.'
-  },
-  GCS_AUTOMATED_PAYMENTS_AMOUNT_INVALID: {
-    en: 'Enter a valid payment amount.',
-    fr: 'Saisissez un montant de paiement valide.'
-  },
-  GCS_AUTOMATED_PAYMENTS_CURRENCY_INVALID: {
-    en: 'Select a valid payment currency.',
-    fr: 'Selectionnez une devise de paiement valide.'
-  },
-  GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH: {
-    en: 'The calculation currency must match the payment currency. Recalculate before saving.',
-    fr: 'La devise du calcul doit correspondre a celle du paiement. Recalculez avant l enregistrement.'
-  },
-  GCS_AUTOMATED_PAYMENTS_OPTIONS_INVALID: {
-    en: 'Review the automated payment options.',
-    fr: 'Verifiez les options du paiement automatise.'
-  },
-  GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING: {
-    en: 'The payment amount exceeds the automated payment ceiling. Reduce the amount before saving.',
-    fr: 'Le montant du paiement depasse le plafond du paiement automatise. Reduisez le montant avant d enregistrer.'
-  },
-  GCS_AUTOMATED_PAYMENTS_MISSING_HOLDBACK_BASES: {
-    en: 'Automated payments cannot be enabled because the stream is missing required holdback bases.',
-    fr: 'Les paiements automatises ne peuvent pas etre actives, car il manque des bases de retenue obligatoires au volet.'
-  },
-  GCS_AUTOMATED_PAYMENTS_UNSUPPORTED_HOLDBACK_BASIS: {
-    en: 'The agreement must use an automated-payments holdback basis configured for the stream.',
-    fr: 'L entente doit utiliser une base de retenue des paiements automatises configuree pour le volet.'
-  }
-}
-
 const validationErrorCodes: Record<string, AutomatedPaymentErrorCode> = {
   egcs_fc_commitmenttype: 'GCS_AUTOMATED_PAYMENTS_COMMITMENT_TYPE_REQUIRED',
   egcs_fc_fiscalyear: 'GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_REQUIRED',
@@ -114,6 +41,11 @@ const validationErrorCodes: Record<string, AutomatedPaymentErrorCode> = {
 
 const issuePath = (issue: z.ZodIssue): string => issue.path.join('.')
 
+/**
+ * Maps a validation issue to its public diagnostic code.
+ * @returns The matching code or the general input diagnostic.
+ * @param issue - Schema validation issue.
+ */
 const validationErrorCodeForIssue = (issue: z.ZodIssue): AutomatedPaymentErrorCode => {
   if (issue.message === 'GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID') {
     return 'GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID'
@@ -125,6 +57,11 @@ const validationErrorCodeForIssue = (issue: z.ZodIssue): AutomatedPaymentErrorCo
 const defaultLocalizedMessage = (message: GcsExtensionLocalizedMessage): string =>
   typeof message === 'string' ? message : message.en
 
+/**
+ * Preserves the bilingual SDK payload alongside its default display text.
+ * @returns The extension user error with localized transport metadata.
+ * @param options - Public error details and messages.
+ */
 const createLocalizedUserError = (options: GcsExtensionUserErrorOptions) => {
   const error = createGcsExtensionUserError({
     ...options,
@@ -138,12 +75,24 @@ const createLocalizedUserError = (options: GcsExtensionUserErrorOptions) => {
   })
 }
 
-/** Returns the localized message registered for an automated-payment error code. */
+/**
+ * Returns the localized message registered for an automated-payment error code.
+ * @returns The English and French diagnostic text.
+ * @param code - Stable automated-payment diagnostic code.
+ */
 const getAutomatedPaymentErrorMessage = (
   code: AutomatedPaymentErrorCode
-): GcsExtensionLocalizedMessage => automatedPaymentErrorMessages[code]
+): GcsExtensionLocalizedMessage => ({
+  en: translateGcsExtensionMessage(errorMessages, 'en', `error.${code}`),
+  fr: translateGcsExtensionMessage(errorMessages, 'fr', `error.${code}`)
+})
 
-/** Creates a localized automated-payment user error with an optional field path. */
+/**
+ * Creates a localized automated-payment user error with an optional field path.
+ * @returns A bilingual extension user error.
+ * @param code - Stable automated-payment diagnostic code.
+ * @param path - Optional field path for validation details.
+ */
 export const createAutomatedPaymentUserError = (
   code: AutomatedPaymentErrorCode,
   path?: string
@@ -158,14 +107,18 @@ export const createAutomatedPaymentUserError = (
     : undefined
 })
 
-/** Creates an actionable bilingual activation error listing missing holdback-basis types. */
+/**
+ * Creates an actionable bilingual activation error listing missing holdback-basis types.
+ * @returns A bilingual activation error with field details.
+ * @param missingTypes - Missing configured holdback-basis types.
+ */
 export const createAutomatedPaymentsMissingHoldbackBasesError = (
   missingTypes: string[]
 ) => {
   const types = missingTypes.join(', ')
   const message: GcsExtensionLocalizedMessage = {
-    en: `Automated payments cannot be enabled. Add active stream holdback bases for these agency holdback-basis types: ${types}.`,
-    fr: `Les paiements automatises ne peuvent pas etre actives. Ajoutez des bases de retenue actives au volet pour les types de base de retenue de l organisme suivants : ${types}.`
+    en: translateGcsExtensionMessage(errorMessages, 'en', 'error.missing_holdback_types', { types }),
+    fr: translateGcsExtensionMessage(errorMessages, 'fr', 'error.missing_holdback_types', { types })
   }
 
   return createLocalizedUserError({
@@ -179,7 +132,11 @@ export const createAutomatedPaymentsMissingHoldbackBasesError = (
   })
 }
 
-/** Converts Zod issues into localized field-level automated-payment error details. */
+/**
+ * Converts Zod issues into localized field-level automated-payment error details.
+ * @returns A bilingual error preserving validation field paths.
+ * @param issues - Schema validation issues.
+ */
 export const createAutomatedPaymentValidationError = (
   issues: z.ZodIssue[]
 ) => createLocalizedUserError({

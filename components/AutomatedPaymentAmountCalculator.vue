@@ -3,7 +3,7 @@ import { formatCalculationExplanation, formatCalculationMoney } from '../shared/
 import { messages } from '../i18n/messages'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { Ref } from 'vue'
-import type { GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
+import { FetchResponseError, type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
 import type { GcsPaymentAmountCalculatorResult } from '@gcs-ssc/extensions/ui'
 import {
   ExtensionBadge,
@@ -45,6 +45,8 @@ const emit = defineEmits<{
 const { locale, t } = useExtensionI18n(messages)
 const calculation: Ref<(AutomatedPaymentCalculationResult & { enabled?: boolean }) | null> = ref(null)
 const errorMessage: Ref<string | null> = ref(null)
+const localErrorKey: Ref<'calculation_error' | 'currency_mismatch' | null> = ref(null)
+const displayedError = computed(() => localErrorKey.value ? t(localErrorKey.value) : errorMessage.value)
 const isLoading: Ref<boolean> = ref(false)
 const releaseHoldback: Ref<boolean> = ref(false)
 const holdbackReleaseAmount: Ref<string> = ref('')
@@ -107,7 +109,7 @@ const resolveApiErrorMessage = (payload: unknown): string | null => {
  * @param response Failed calculation response.
  * @returns Localized error text.
  */
-const readErrorMessage = async (response: Response): Promise<string> => {
+const readErrorMessage = async (response: Response): Promise<string | null> => {
   try {
     const payload = await response.json()
     const apiMessage = resolveApiErrorMessage(payload)
@@ -118,7 +120,7 @@ const readErrorMessage = async (response: Response): Promise<string> => {
     // Fall through to localized fallback when the response is not JSON.
   }
 
-  return response.statusText || t('calculation_error')
+  return null
 }
 
 /**
@@ -179,7 +181,7 @@ const publishResult = () => {
     details: calculation.value?.details ?? [],
     explanation: calculationExplanation.value,
     loading: isLoading.value,
-    error: errorMessage.value
+    error: displayedError.value
   }
   emit('result', result)
 }
@@ -192,6 +194,7 @@ const calculate = async () => {
   const body = requestBody.value
   calculation.value = null
   errorMessage.value = null
+  localErrorKey.value = null
   emit('extensionPayload', {
     releaseHoldback: releaseHoldback.value,
     holdbackReleaseAmount: serializedHoldbackReleaseAmount.value
@@ -210,7 +213,10 @@ const calculate = async () => {
   try {
     const result = await api.post<AutomatedPaymentCalculationResult>(endpoint.value, body)
     if (sequence !== calculationSequence) return
-    if (result.currency.toLowerCase() !== body.egcs_fc_currency) throw new Error(t('currency_mismatch'))
+    if (result.currency.toLowerCase() !== body.egcs_fc_currency) {
+      localErrorKey.value = 'currency_mismatch'
+      return
+    }
     calculation.value = result
     errorMessage.value = null
   } catch (error: unknown) {
@@ -221,8 +227,12 @@ const calculate = async () => {
       if (sequence !== calculationSequence) return
       errorMessage.value = message
     } else {
-      errorMessage.value = error instanceof Error ? error.message : t('calculation_error')
+      errorMessage.value = error instanceof FetchResponseError
+        && !(isRecord(error.data) && typeof error.data.text === 'string')
+        ? resolveApiErrorMessage(error.data)
+        : null
     }
+    if (!errorMessage.value) localErrorKey.value = 'calculation_error'
   } finally {
     if (sequence === calculationSequence) {
       isLoading.value = false
@@ -278,8 +288,8 @@ watch([() => JSON.stringify(requestBody.value), endpoint], calculate, { immediat
       <ExtensionIcon name="i-lucide-loader-circle" class="animate-spin" />
       {{ t('calculating') }}
     </div>
-    <p v-else-if="errorMessage" class="text-sm text-error">
-      {{ errorMessage }}
+    <p v-else-if="displayedError" role="alert" class="text-sm text-error">
+      {{ displayedError }}
     </p>
   </section>
 </template>

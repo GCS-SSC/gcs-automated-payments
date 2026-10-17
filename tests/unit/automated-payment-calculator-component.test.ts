@@ -266,7 +266,7 @@ describe('automated payment amount calculator', () => {
     {
       name: 'plain Error',
       rejection: new Error('calculation exploded'),
-      expected: 'calculation exploded'
+      expected: 'Unable to calculate the automated payment. Check the payment fields and try again.'
     },
     {
       name: 'non-Error rejection',
@@ -293,10 +293,10 @@ describe('automated payment amount calculator', () => {
   })
 
   it.each([
-    { statusText: 'Bad Gateway', json: async () => { throw new Error('not json') }, expected: 'Bad Gateway' },
-    { statusText: '', json: async () => ({}), expected: 'HTTP 400' },
+    { statusText: 'Bad Gateway', json: async () => { throw new Error('not json') }, expected: 'Unable to calculate the automated payment. Check the payment fields and try again.' },
+    { statusText: '', json: async () => ({}), expected: 'Unable to calculate the automated payment. Check the payment fields and try again.' },
     { statusText: 'ignored', json: async () => ({ message: 'top-level message' }), expected: 'top-level message' },
-    { statusText: 'ignored', json: async () => ({ statusMessage: 'top-level status' }), expected: 'ignored' },
+    { statusText: 'ignored', json: async () => ({ statusMessage: 'top-level status' }), expected: 'top-level status' },
     { statusText: 'ignored', json: async () => ({ data: { message: 'nested message' } }), expected: 'nested message' },
     { statusText: 'ignored', json: async () => ({ data: { details: [null, { message: '' }, { message: 'detail message' }] } }), expected: 'detail message' }
   ])('extracts API errors before falling back to "$statusText"', async ({ statusText, json, expected }) => {
@@ -536,4 +536,20 @@ it.each([
   const wrapper = mountCalculator({ commitmentType: 'commitment', fiscalYear: '1', paymentType: 'advance', periodStart: 1, periodEnd: 2, amount: 50 })
   await flushPromises()
   expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ error: expected })
+})
+
+it('translates fallback errors live without exposing network diagnostics or refetching', async () => {
+  const locale = ref('en')
+  vi.stubGlobal('useI18n', () => ({ locale, t: () => { throw new Error('Host lookup forbidden') } }))
+  const fetchMock = vi.fn(async () => { throw new TypeError('Failed to fetch') })
+  vi.stubGlobal('fetch', fetchMock)
+  const wrapper = mountCalculator({ commitmentType: '1', fiscalYear: '1', paymentType: 'advance', currency: 'cad', periodStart: 1, periodEnd: 2 })
+  await flushPromises()
+  expect(wrapper.get('[role="alert"]').text()).toBe('Unable to calculate the automated payment. Check the payment fields and try again.')
+  locale.value = 'fr'
+  await flushPromises()
+  expect(wrapper.get('[role="alert"]').text()).toBe('Impossible de calculer le paiement automatisé. Vérifiez les champs du paiement et réessayez.')
+  expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ error: wrapper.get('[role="alert"]').text() })
+  expect(fetchMock).toHaveBeenCalledOnce()
+  expect(wrapper.text()).not.toContain('Failed to fetch')
 })
