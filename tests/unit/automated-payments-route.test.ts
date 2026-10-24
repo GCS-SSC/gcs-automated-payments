@@ -1,8 +1,10 @@
+import { IncomingMessage, ServerResponse } from 'node:http'
+import { Socket } from 'node:net'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GcsExtensionRouteEvent } from '@gcs-ssc/extensions/server'
+import { createEvent } from 'h3'
 
 const agencyConfig = { creditMemoBasis: 'all' }
-const readBodyMock = vi.fn()
 const calculateAutomatedPaymentFromDbMock = vi.fn()
 const financials = { getCostAllocationContext: vi.fn(), getPaymentCalculation: vi.fn(), getClaimRecoveryProjection:vi.fn(), getRecordedPaidToDate: vi.fn(), getPaidAccountingProjection: vi.fn(), getCommitmentPaymentCapacity: vi.fn(), getCommitmentLinePaymentCoverage: vi.fn(), validatePaymentAllocations: vi.fn() }
 const validCommitmentTypeId = '9223372036854775807'
@@ -16,16 +18,22 @@ const validBody = {
   egcs_fc_paymentamount: '90.50'
 }
 
-vi.mock('h3', () => ({
-  isEvent: () => true,
-  readBody: (...args: unknown[]) => readBodyMock(...args)
-}))
-
 vi.mock('../../server/calculation-data', () => ({
   calculateAutomatedPaymentFromDb: (...args: unknown[]) => calculateAutomatedPaymentFromDbMock(...args)
 }))
 
-const createRouteEvent = (context: GcsExtensionRouteEvent['context']): GcsExtensionRouteEvent => ({ context, node: { req: { headers: {} } } } as unknown as GcsExtensionRouteEvent)
+const createRouteEvent = (context: GcsExtensionRouteEvent['context'], body: unknown) => {
+  const request = new IncomingMessage(new Socket())
+  const json = JSON.stringify(body)
+  request.method = 'POST'
+  request.headers = {
+    'content-type': 'application/json',
+    'content-length': String(Buffer.byteLength(json))
+  }
+  request.push(json)
+  request.push(null)
+  return Object.assign(createEvent(request, new ServerResponse(request)), { context: { ...context } })
+}
 
 describe('gcs automated payments calculation route', () => {
   beforeEach(() => {
@@ -35,28 +43,30 @@ describe('gcs automated payments calculation route', () => {
 
   it('requires an agreement id before calculating', async () => {
     const handler = (await import('../../server/api/calculate-payment.post')).default
+    const event = createRouteEvent({ $db: {}, params: {} }, validBody)
+    const readRequest = vi.spyOn(event.node.req, 'read')
 
-    await expect(handler(createRouteEvent({ $db: {}, params: {} }))).rejects.toMatchObject({
+    await expect(handler(event)).rejects.toMatchObject({
       code: 'GCS_AUTOMATED_PAYMENTS_AGREEMENT_REQUIRED'
     })
-    expect(readBodyMock).not.toHaveBeenCalled()
+    expect(readRequest).not.toHaveBeenCalled()
     expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
   })
 
   it('converts invalid route input into extension-owned validation details', async () => {
-    readBodyMock.mockResolvedValueOnce({
+    const body = {
       egcs_fc_commitmenttype: '',
       egcs_fc_fiscalyear: validFiscalYearId,
       egcs_fc_paymenttype: 'advance',
       egcs_fc_periodstart: 5,
       egcs_fc_periodend: 4
-    })
+    }
     const handler = (await import('../../server/api/calculate-payment.post')).default
 
     await expect(handler(createRouteEvent({
       params: { agreementId: 'agreement-1' },
       $db: {}
-    }))).rejects.toMatchObject({
+    }, body))).rejects.toMatchObject({
       code: 'GCS_AUTOMATED_PAYMENTS_INVALID_CALCULATION_INPUT',
       details: expect.arrayContaining([
         expect.objectContaining({
@@ -84,13 +94,13 @@ describe('gcs automated payments calculation route', () => {
     { name: 'malformed fiscal year', field: 'egcs_fc_fiscalyear', value: 'fy-1', code: 'GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_REQUIRED' },
     { name: 'repeated fiscal years', field: 'egcs_fc_fiscalyear', value: [validFiscalYearId, validFiscalYearId], code: 'GCS_AUTOMATED_PAYMENTS_FISCAL_YEAR_REQUIRED' }
   ])('rejects $name without querying the calculator database', async ({ field, value, code }) => {
-    readBodyMock.mockResolvedValueOnce({ ...validBody, [field]: value })
+    const body = { ...validBody, [field]: value }
     const handler = (await import('../../server/api/calculate-payment.post')).default
 
     await expect(handler(createRouteEvent({
       params: { agreementId: 'agreement-1' },
       $db: {}
-    }))).rejects.toMatchObject({
+    }, body))).rejects.toMatchObject({
       code: 'GCS_AUTOMATED_PAYMENTS_INVALID_CALCULATION_INPUT',
       statusCode: 400,
       details: expect.arrayContaining([expect.objectContaining({ path: field, code })])
@@ -112,7 +122,7 @@ describe('gcs automated payments calculation route', () => {
     }
     const db = {}
     const streamConfig = { enabledPaymentTypes: ['advance'] }
-    readBodyMock.mockResolvedValueOnce({
+    const body = {
       ...validBody,
       extensions: {
         'gcs-automated-payments': {
@@ -120,7 +130,7 @@ describe('gcs automated payments calculation route', () => {
           holdbackReleaseAmount: '5.25'
         }
       }
-    })
+    }
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce(result)
     const handler = (await import('../../server/api/calculate-payment.post')).default
 
@@ -128,7 +138,7 @@ describe('gcs automated payments calculation route', () => {
       params: { agreementId: 'agreement-1' },
       $db: db,
       gcsExtension: { agencyConfig, config: streamConfig, agreementFinancials: financials }
-    }))).resolves.toBe(result)
+    }, body))).resolves.toBe(result)
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(db, {
       agreementId: 'agreement-1',
       currency: 'cad',
@@ -144,18 +154,18 @@ describe('gcs automated payments calculation route', () => {
   })
 
   it('passes explicit USD through the public route and retains the calculator currency', async () => {
-    readBodyMock.mockResolvedValueOnce({ ...validBody, egcs_fc_currency: 'usd' })
+    const body = { ...validBody, egcs_fc_currency: 'usd' }
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({ currency: 'USD', ceilingAmount: '90.00' })
     const handler = (await import('../../server/api/calculate-payment.post')).default
-    await expect(handler(createRouteEvent({ params: { agreementId: '1' }, $db: {}, gcsExtension: { agencyConfig, config: {}, agreementFinancials: financials } })))
+    await expect(handler(createRouteEvent({ params: { agreementId: '1' }, $db: {}, gcsExtension: { agencyConfig, config: {}, agreementFinancials: financials } }, body)))
       .resolves.toMatchObject({ currency: 'USD', ceilingAmount: '90.00' })
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ currency: 'usd' }), expect.anything(), financials, agencyConfig)
   })
 
   it.each(['', 'USD', 'usd,cad', ['usd', 'cad'], 123, null])('rejects invalid currency %j before source access', async currency => {
-    readBodyMock.mockResolvedValueOnce({ ...validBody, egcs_fc_currency: currency })
+    const body = { ...validBody, egcs_fc_currency: currency }
     const handler = (await import('../../server/api/calculate-payment.post')).default
-    await expect(handler(createRouteEvent({ params: { agreementId: '1' }, $db: {} }))).rejects.toMatchObject({
+    await expect(handler(createRouteEvent({ params: { agreementId: '1' }, $db: {} }, body))).rejects.toMatchObject({
       code: 'GCS_AUTOMATED_PAYMENTS_INVALID_CALCULATION_INPUT',
       details: expect.arrayContaining([expect.objectContaining({ path: 'egcs_fc_currency', code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_INVALID' })])
     })

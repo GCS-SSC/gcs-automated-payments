@@ -22,12 +22,14 @@
     "@playwright/test": "^1.55.0",
     "@types/node": "^25.3.0",
     "@vitejs/plugin-vue": "^6.0.4",
+    "@vitest/coverage-v8": "^4.1.12",
     "@vue/test-utils": "^2.4.6",
     "h3": "1.15.5",
     "jsdom": "^28.1.0",
     "kysely": "^0.28.11",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18",
+    "vite": "^8.3.5",
+    "vitest": "^4.1.12",
     "vue-tsc": "^3.2.4"
   }
 }

@@ -32,13 +32,16 @@ const min = (...values: bigint[]) => values.reduce((a, b) => a < b ? a : b)
 const positive = (value: bigint) => value > BigInt(0) ? value : BigInt(0)
 const csvCell = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`
 
+// API probes request nonpersistent HTTP connections across browser UI waits.
+const apiRequestHeaders = { Connection: 'close' }
+
 const read = async <T = Row>(page: Page, path: string): Promise<T> => {
-  const response = await page.request.get(path, { maxRetries: 2 })
+  const response = await page.request.get(path, { headers: apiRequestHeaders, maxRetries: 2 })
   expect(response.ok(), `${path}: ${response.status()} ${await response.text()}`).toBe(true)
   return await response.json() as T
 }
 const post = async <T = Row>(page: Page, path: string, data: Record<string, unknown>): Promise<T> => {
-  const response = await page.request.post(path, { data })
+  const response = await page.request.post(path, { headers: apiRequestHeaders, data })
   expect(response.ok(), `${path}: ${response.status()} ${await response.text()}`).toBe(true)
   return await response.json() as T
 }
@@ -181,7 +184,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
     await expect(page.locator('[role="listbox"]')).toHaveCount(0)
   }
   const reject = async (currency: Currency, boundary: string, path: string, data: Record<string, unknown>, method: 'post' | 'patch' = 'post') => {
-    const response = await page.request[method](path, { data })
+    const response = await page.request[method](path, { headers: apiRequestHeaders, data })
     const error = await response.json()
     expect(response.status(), `${boundary}: ${JSON.stringify(error)}`).toBe(400)
     const code = boundary === 'agreement-currency-immutable' ? 'AGREEMENT_CURRENCY_IMMUTABLE'
@@ -247,14 +250,14 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       await expect(lineDialog).toBeHidden()
       const detail = await read<Row & { lines: Row[] }>(page, `${agreementBase}/commitments/${created.id}`)
       commitmentLines[currency] = detail.lines[0]!.id
-      const wrongCoding = await page.request.post(`${agreementBase}/commitment-lines`, { data: {
+      const wrongCoding = await page.request.post(`${agreementBase}/commitment-lines`, { headers: apiRequestHeaders, data: {
         egcs_fc_commitment: created.id, egcs_fc_commitmentlinenumber: 2,
         egcs_fc_transferpaymentstreamchartofaccount: currency === 'cad' ? usdLinkedChart.id : linkedChart.id,
         egcs_fc_amount: '0.01'
       } })
       expect(wrongCoding.status()).toBe(400)
       expect((await wrongCoding.json()).data.code).toBe('INVALID_AGREEMENT_CHART_OF_ACCOUNT')
-      const overNativeLimit = await page.request.post(`${agreementBase}/commitment-lines`, { data: {
+      const overNativeLimit = await page.request.post(`${agreementBase}/commitment-lines`, { headers: apiRequestHeaders, data: {
         egcs_fc_commitment: created.id, egcs_fc_commitmentlinenumber: 2,
         egcs_fc_transferpaymentstreamchartofaccount: currency === 'cad' ? linkedChart.id : usdLinkedChart.id,
         egcs_fc_amount: '0.01'
@@ -264,7 +267,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       expect((await read<Row & { lines: Row[] }>(page, `${agreementBase}/commitments/${created.id}`)).lines).toHaveLength(1)
       // The header checks native Program funding without the earlier declared-total line guard.
       const beforeFundingProbe = await read(page, `${agreementBase}/commitments-overview`)
-      const overNativeFunding = await page.request.post(`${agreementBase}/commitments`, { data: {
+      const overNativeFunding = await page.request.post(`${agreementBase}/commitments`, { headers: apiRequestHeaders, data: {
         egcs_fc_type: created.egcs_fc_type, egcs_fc_currency: currency,
         egcs_fc_totalamount: amount(cents(budgets[currency]) + BigInt(1))
       } })
@@ -296,7 +299,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       }
       await complete('fundingcaseforecast', forecast.id)
     }
-    const enabled = await page.request.patch(`/api/extensions/streams/${owner.streamId}`, { data: {
+    const enabled = await page.request.patch(`/api/extensions/streams/${owner.streamId}`, { headers: apiRequestHeaders, data: {
       extensionKey: 'gcs-automated-payments', enabled: true, config: { enabledPaymentTypes: ['advance', 'reimbursement'] }
     } })
     expect(enabled.ok(), await enabled.text()).toBe(true)
@@ -402,7 +405,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
           })
       }
       const oppositeCurrency: Currency = currency === 'cad' ? 'usd' : 'cad'
-      const wrongLine = await page.request.post(`${agreementBase}/payment-lines`, { data: {
+      const wrongLine = await page.request.post(`${agreementBase}/payment-lines`, { headers: apiRequestHeaders, data: {
         egcs_fc_fundingagreementpayment: payment.id,
         egcs_fc_fundingagreementcommitmentline: commitmentLines[oppositeCurrency], egcs_fc_amount: '0.01'
       } })
@@ -469,13 +472,17 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
     await reconcile(1, { usd: ['410.07', '400.07'] })
     await createPayment('currency-06-USD-claim-underpayment', 'usd', 'reimbursement', 1)
     await createPayment('currency-07-CAD-cutoff-excludes-USD-only-claim', 'cad', 'advance', 1)
-    await reconcile(2, { usd: ['100.00', '100.00'] })
+    // Accepted USD costs may exceed this submission; both annual totals remain $600.07.
+    await reconcile(2, { usd: ['80.00', '100.00'] })
     await createPayment('currency-08-USD-ordinary-final-payment', 'usd', 'reimbursement', 2)
     await createPayment('currency-09-USD-final-holdback-release', 'usd', 'reimbursement', 2, '100.00')
     await createPayment('currency-10-CAD-native-commitment-ceiling', 'cad', 'advance', 2)
     await check('currency-11-CAD-overpaid-claims-no-reimbursement', 'cad', 'reimbursement', 2)
     await check('currency-12-USD-exhausted-despite-CAD-values', 'usd', 'reimbursement', 2, '100.00')
     expect(paid).toEqual({ cad: '1000.05', usd: '600.07' })
+    const usdClaims = await read<{ lineItems: Array<{ egcs_fc_amount: string }> }>(
+      page, `${usdBase}/claims-overview`)
+    expect(sum(usdClaims.lineItems.map(line => line.egcs_fc_amount))).toBe('600.07')
     await persist()
     await verifyFundingCurrencyControls(page, testInfo, owner)
     for (const currency of ['cad', 'usd'] as const) {

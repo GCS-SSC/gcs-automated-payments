@@ -628,7 +628,7 @@ export const runPaymentAccuracyJourney = async (
     claimsAmount = sum([claimsAmount, reconciled])
     submittedClaims = sum([submittedClaims, submitted])
     lastClaimMonth = month
-    addLedger('submitted_claim', claim.id, month, submitted, 'Raw claim is deliberately higher than accepted costs.')
+    addLedger('submitted_claim', claim.id, month, submitted, 'Submitted claim is retained independently of approved reconciled costs.')
     addLedger('reconciliation', reconciliation.id, month, reconciled, 'Only approved reconciled amount enters payment calculation.')
     await persist()
   }
@@ -639,7 +639,8 @@ export const runPaymentAccuracyJourney = async (
     await createPaymentUi('03_advance_replaces_claimed_forecast', 'advance', 1)
     await reconcile(1, '510.03', '500.03')
     await createPaymentUi('04_claim_underpayment_reimbursement', 'reimbursement', 1)
-    await reconcile(2, '400.02', '400.02')
+    // Accepted costs may exceed this submission; both annual totals remain $1,000.05.
+    await reconcile(2, '380.02', '400.02')
     await check('05_full_holdback_limits_final_claim', 'reimbursement', 2)
     await createPaymentUi('06_unused_release_does_not_reduce_next_holdback', 'reimbursement', 2, '50.00', '300.02')
     await createPaymentUi('07_first_fifty_of_last_money', 'reimbursement', 2, '50.00')
@@ -648,6 +649,9 @@ export const runPaymentAccuracyJourney = async (
     await check('10_fully_paid_no_further_payment', 'reimbursement', 2, '100.00')
     expect(paidAmount).toBe('1000.05')
     expect(claimsAmount).toBe('1000.05')
+    const submitted = await read<{ lineItems: Array<{ egcs_fc_amount: string }> }>(
+      page, `${agreementBase}/claims-overview`)
+    expect(sum(submitted.lineItems.map(line => line.egcs_fc_amount))).toBe('1000.05')
     await persist()
     await testInfo.attach('manual-calculation-scenarios', { path: join(testInfo.outputDir, 'automated-payment-scenarios.csv'), contentType: 'text/csv' })
     await testInfo.attach('source-financial-ledger', { path: join(testInfo.outputDir, 'automated-payment-ledger.csv'), contentType: 'text/csv' })
