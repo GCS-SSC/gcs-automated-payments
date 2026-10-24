@@ -25,7 +25,7 @@ const updateSelection = (value: unknown) => {
     name="creditMemoBasis"
     :description="t('credit_memo_basis_description')"
     :error="selection.success ? undefined : t('credit_memo_basis_required')"
-    :required="true">
+    :required="true" data-field-scope="extension.gcs-automated-payments.agency-automated-payments-config">
     <ExtensionSelectMenu
       :model-value="selection.success ? selection.data : undefined"
       :items="options"

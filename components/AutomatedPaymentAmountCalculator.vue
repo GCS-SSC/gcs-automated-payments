@@ -247,7 +247,7 @@ watch([() => JSON.stringify(requestBody.value), endpoint], calculate, { immediat
 </script>
 
 <template>
-  <section class="space-y-3 py-4">
+  <section class="space-y-3 py-4" data-field-scope="extension.gcs-automated-payments.automated-payment-amount-calculator" data-scope-label-en="Agreements > Payments > Amount calculator" data-scope-label-fr="Ententes > Paiements > Calculateur du montant" data-field-tooltip-context="agreement">
     <div class="flex items-center justify-between gap-3">
       <div>
         <h3 class="text-sm font-semibold text-highlighted">
@@ -265,7 +265,7 @@ watch([() => JSON.stringify(requestBody.value), endpoint], calculate, { immediat
     <div class="grid gap-3 sm:grid-cols-2">
       <ExtensionFormField
         :label="t('release_holdback')"
-        class="sm:col-span-2">
+        class="sm:col-span-2" data-ui-target="extension.gcs-automated-payments.automated-payment-amount-calculator.release_holdback">
         <ExtensionCheckbox
           v-model="releaseHoldback"
           :label="t('release_holdback_label')"
@@ -277,7 +277,7 @@ watch([() => JSON.stringify(requestBody.value), endpoint], calculate, { immediat
 
       <ExtensionFormField
         v-if="releaseHoldback"
-        :label="t('holdback_release_amount')">
+        :label="t('holdback_release_amount')" data-ui-target="extension.gcs-automated-payments.automated-payment-amount-calculator.holdback_release_amount">
         <ExtensionCurrencyInput
           v-model="holdbackReleaseAmount"
           :currency="selectedCurrency" />

@@ -49,7 +49,7 @@ const updatePaymentType = (paymentType: AutomatedPaymentType, enabled: boolean) 
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="space-y-6" data-field-scope="extension.gcs-automated-payments.stream-automated-payments-config">
     <section class="space-y-4">
       <div>
         <h3 class="text-base font-semibold text-highlighted">
@@ -61,7 +61,7 @@ const updatePaymentType = (paymentType: AutomatedPaymentType, enabled: boolean) 
       </div>
 
       <div class="space-y-3">
-        <ExtensionFormField :label="t('enabled_payment_types')">
+        <ExtensionFormField :label="t('enabled_payment_types')" data-ui-target="extension.gcs-automated-payments.stream-automated-payments-config.enabled_payment_types">
           <div class="flex flex-wrap gap-3">
             <ExtensionCheckbox
               v-for="option in paymentTypeOptions"
