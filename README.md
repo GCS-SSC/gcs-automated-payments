@@ -44,11 +44,16 @@ same credit choice as entitlement.
 Earlier fiscal years accumulate, while later Claims
 and forecast remain outside the selected cutoff. There is no currency conversion.
 
-The extension rounds holdback down to whole dollars, reapplies the reserve each
+The extension rounds holdback down to whole major currency units, reapplies the reserve each
 calculation, caps it at unpaid eligibility and caps elected release at that reserve.
 Final-fiscal basis includes an empty final current year. Each Payment is capped at
 entitlement, Commitment/shared-coding capacity, availability plus elected release,
-and `numeric(19,2)`; aggregates retain cents and can exceed one persisted row.
+and the 38-digit persisted minor-unit envelope; derived totals may exceed one persisted row.
+All monetary JSON fields use the shared SDK `Money` object (`amount` is signed integer
+minor-unit text; `currency` is the uppercase denomination). SQL stores those integer
+minor units exactly. UI drafts use the currency’s actual subdivision: JPY has no
+fraction, KWD has three decimal places, and MGA has fifths. Calculations, settlement
+rounding and display use `@gcs-ssc/extensions/money`; no local cents calculator remains.
 `availableBeforeHoldback` retains its established meaning of ordinary funds after
 reserving holdback.
 
@@ -59,7 +64,7 @@ and update guards re-read host inputs and extension calculations under the Agree
 amounts above the live ceiling. Amount keystrokes do not change calculation inputs.
 
 Creation and permitted draft financial edits store `payment-metadata.calculationEvidence` in extension KV under
-`fundingcasepayment`. Version 2 retains selection, agency credit basis, calculation timestamp,
+`fundingcasepayment`. Version 3 retains selection, agency credit basis, calculation timestamp,
 exact amounts and the extension-owned semantic arithmetic ledgers: row labels,
 operators, percentages, totals, limiting reasons and note values. The host's
 Payment evidence page includes the extension's `payment.evidence` slot alongside
@@ -75,10 +80,10 @@ invalidates its old calculation on a permitted financial edit while preserving
 holdback-release metadata; reenabling cannot display a stale calculation. Missing snapshots show an explicit empty state;
 corrupt evidence returns a localized error with Retry. Payment Viewer authority,
 Agency/Stream enablement and stale Payment response protection still apply.
-Older version-1 snapshots remain simple historical detail rows, including their
-original “Eligible credit memos” label where present. Missing historical ledger
-values are never invented. Existing holdback-release metadata stays readable by
-update guards. The Calculation details SDK section uses the full workspace width.
+The clean cutover retains only version-3 currency-bearing minor-unit calculation
+snapshots. Earlier decimal-string evidence versions are rejected; fresh seed data
+must use the current contract. Update guards validate the same currency-bearing
+holdback-release metadata. The Calculation details SDK section uses the full workspace width.
 
 The host owns Payment evidence navigation and contribution discovery. Saved
 ledger rows use the wizard's responsive layout and wrap long exact amounts.
@@ -119,7 +124,7 @@ and renders no separate accordion. Labeled operands show the calculated payment,
 holdback basis and rate, and available funds; a final comparison identifies the
 limit that sets the maximum payment. Zero operands are omitted unless they are
 the only starting amount or an elected release. A zero holdback rate omits the
-holdback ledger. Notes explain negative totals, whole-dollar rounding, capped
+holdback ledger. Notes explain negative totals, whole-major-unit rounding, capped
 reserves and releases. Locale changes republish labels, currency amounts and
-percentages without recalculating. Version-2 evidence retains these raw semantic
+percentages without recalculating. Version-3 evidence retains these raw semantic
 ledgers at creation or the latest permitted recalculation and displays them with the same renderer and formatter.

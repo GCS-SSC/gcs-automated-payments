@@ -1,112 +1,61 @@
 import { z } from 'zod'
+import { getCurrency, isPersistableMoney, parseMoney, parseDecimalText, type DecimalText, type Money } from '@gcs-ssc/extensions/money'
 
 export const EXTENSION_KEY = 'gcs-automated-payments'
 const automatedPaymentTypes = ['reimbursement', 'advance'] as const
 export type AutomatedPaymentType = (typeof automatedPaymentTypes)[number]
+export type { Money as AutomatedPaymentMoney } from '@gcs-ssc/extensions/money'
+export type AutomatedPaymentMoneyInput = Money
 
-declare const moneyBrand: unique symbol
-export type AutomatedPaymentMoney = string & { readonly [moneyBrand]: true }
-export type AutomatedPaymentMoneyInput = string | number
-const MONEY_INPUT = /^-?(?:0|[1-9]\d*)(?:\.\d{1,2})?$/
-const MAX_ROW_CENTS = BigInt('9999999999999999999')
-export const ZERO_AUTOMATED_PAYMENT_MONEY = '0.00' as AutomatedPaymentMoney
-// Host payment creation validates its owning currency enum. The calculator and
-// SDK transport native lower-case three-letter codes without importing host internals.
-export const AutomatedPaymentCurrencySchema = z.string().regex(/^[a-z]{3}$/).default('cad')
-
-export const toCents = (value: string, bounded = false): bigint => {
-  if (!MONEY_INPUT.test(value)) throw new TypeError('Money must be an exact decimal with at most two fractional digits.')
-  const negative = value.startsWith('-')
-  const [whole = '0', fraction = ''] = (negative ? value.slice(1) : value).split('.')
-  const cents = BigInt(whole) * BigInt(100) + BigInt(fraction.padEnd(2, '0'))
-  const signed = negative ? -cents : cents
-  if (bounded && (signed > MAX_ROW_CENTS || signed < -MAX_ROW_CENTS)) throw new RangeError('Money exceeds numeric(19,2).')
-  return signed
-}
-export const fromCents = (cents: bigint): AutomatedPaymentMoney => {
-  const negative = cents < BigInt(0)
-  const absolute = negative ? -cents : cents
-  return `${negative ? '-' : ''}${absolute / BigInt(100)}.${String(absolute % BigInt(100)).padStart(2, '0')}` as AutomatedPaymentMoney
-}
-export const tryParseAutomatedPaymentMoney = (value: unknown): AutomatedPaymentMoney | null => {
-  try {
-    if (typeof value === 'number') {
-      if (!Number.isFinite(value)) return null
-      const cents = toCents(String(value), true)
-      if (cents > BigInt(Number.MAX_SAFE_INTEGER) || cents < BigInt(Number.MIN_SAFE_INTEGER)) return null
-      return fromCents(cents)
-    }
-    return typeof value === 'string' ? fromCents(toCents(value, true)) : null
-  } catch { return null }
-}
-export const parseAutomatedPaymentMoney = (value: string | number): AutomatedPaymentMoney => {
-  const parsed = tryParseAutomatedPaymentMoney(value)
-  if (parsed === null) throw new TypeError('Invalid exact money value.')
-  return parsed
-}
-export const parseAutomatedPaymentAggregateMoney = (value: string): AutomatedPaymentMoney => fromCents(toCents(value))
-export const AutomatedPaymentMoneySchema = z.union([z.string(), z.number()]).transform((value, ctx) => {
-  const parsed = tryParseAutomatedPaymentMoney(value)
-  if (parsed !== null) return parsed
-  ctx.addIssue({ code: 'custom', message: 'GCS_AUTOMATED_PAYMENTS_MONEY_INVALID' })
-  return z.NEVER
+export const AutomatedPaymentCurrencySchema = z.string().regex(/^[a-z]{3}$/).refine(value => {
+  try { getCurrency(value); return true } catch { return false }
 })
-export const addAutomatedPaymentMoney = (a: AutomatedPaymentMoney, b: AutomatedPaymentMoney) => fromCents(toCents(a) + toCents(b))
-export const subtractAutomatedPaymentMoney = (a: AutomatedPaymentMoney, b: AutomatedPaymentMoney) => fromCents(toCents(a) - toCents(b))
-export const compareAutomatedPaymentMoney = (a: AutomatedPaymentMoney, b: AutomatedPaymentMoney) => toCents(a) < toCents(b) ? -1 : toCents(a) > toCents(b) ? 1 : 0
-export const sumAutomatedPaymentMoney = (values: AutomatedPaymentMoney[]) => values.reduce(addAutomatedPaymentMoney, ZERO_AUTOMATED_PAYMENT_MONEY)
+const MoneyObjectSchema = z.object({ amount: z.string(), currency: z.string() }).strict().transform((value, ctx) => {
+  try { return parseMoney(value) } catch {
+    ctx.addIssue({ code: 'custom', message: 'GCS_AUTOMATED_PAYMENTS_MONEY_INVALID' })
+    return z.NEVER
+  }
+})
+export const AutomatedPaymentMoneySchema = MoneyObjectSchema.refine(isPersistableMoney, { message: 'GCS_AUTOMATED_PAYMENTS_MONEY_INVALID' })
+const PercentageSchema = z.string().transform((value, ctx) => {
+  try {
+    const decimal = parseDecimalText(value)
+    if (!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(decimal) || Number(decimal) > 100) throw new TypeError('Invalid percentage.')
+    return decimal
+  } catch {
+    ctx.addIssue({ code: 'custom', message: 'GCS_AUTOMATED_PAYMENTS_MONEY_INVALID' })
+    return z.NEVER
+  }
+})
 
 export interface AutomatedPaymentsStreamConfig { enabledPaymentTypes: AutomatedPaymentType[] }
 export const AutomatedPaymentCreditMemoBasisSchema = z.enum(['all', 'reconciled-periods'])
 export const AutomatedPaymentsAgencyConfigSchema = z.object({ creditMemoBasis: AutomatedPaymentCreditMemoBasisSchema })
 export type AutomatedPaymentCreditMemoBasis = z.infer<typeof AutomatedPaymentCreditMemoBasisSchema>
-export interface AutomatedPaymentExtensionPayload { releaseHoldback: boolean, holdbackReleaseAmount: AutomatedPaymentMoney }
+export interface AutomatedPaymentExtensionPayload { releaseHoldback: boolean, holdbackReleaseAmount?: Money }
+export type AutomatedPaymentExplanationRow =
+  | { label: string; value: Money; operator?: '+' | '−' | '×'; format?: never }
+  | { label: string; value: DecimalText; operator?: '+' | '−' | '×'; format: 'percent' }
 export interface AutomatedPaymentCalculationResult {
-  baseAmount: AutomatedPaymentMoney
-  ceilingAmount: AutomatedPaymentMoney
-  suggestedAmount: AutomatedPaymentMoney
-  holdbackAmount: AutomatedPaymentMoney
-  holdbackReleaseAmount: AutomatedPaymentMoney
-  availableBeforeHoldback: AutomatedPaymentMoney
+  baseAmount: Money
+  ceilingAmount: Money
+  suggestedAmount: Money
+  holdbackAmount: Money
+  holdbackReleaseAmount: Money
+  availableBeforeHoldback: Money
   currency: string
-  details: Array<{ label: string, value: AutomatedPaymentMoney }>
+  details: Array<{ label: string, value: Money }>
   explanation?: Array<{
     label: string
-    rows: Array<{ label: string, value: AutomatedPaymentMoney, operator?: '+' | '−' | '×', format?: 'percent' }>
-    total: { label: string, value: AutomatedPaymentMoney }
+    rows: AutomatedPaymentExplanationRow[]
+    total: { label: string, value: Money }
     notes?: string[]
-    noteValues?: Record<string, AutomatedPaymentMoney>
+    noteValues?: Record<string, Money>
     emphasis?: boolean
   }>
 }
 
-const CalculationEvidenceMoneySchema = z.string().regex(/^-?(?:0|[1-9]\d*)\.\d{2}$/)
-  .transform(parseAutomatedPaymentAggregateMoney)
-const CalculationEvidenceV1Schema = z.object({
-  version: z.literal(1),
-  capturedAt: z.iso.datetime(),
-  input: z.object({
-    fiscalYearId: z.string(), commitmentTypeId: z.string(),
-    periodStart: z.number().int().min(0).max(11).optional(),
-    creditMemoBasis: AutomatedPaymentCreditMemoBasisSchema.optional(),
-    paymentType: z.enum(automatedPaymentTypes), periodEnd: z.number().int().min(0).max(11),
-    currency: z.string().regex(/^[a-z]{3}$/)
-  }),
-  calculation: z.object({
-    enabled: z.boolean(), currency: z.string().regex(/^[A-Z]{3}$/),
-    baseAmount: CalculationEvidenceMoneySchema, ceilingAmount: CalculationEvidenceMoneySchema,
-    suggestedAmount: CalculationEvidenceMoneySchema, holdbackAmount: CalculationEvidenceMoneySchema,
-    holdbackReleaseAmount: CalculationEvidenceMoneySchema, availableBeforeHoldback: CalculationEvidenceMoneySchema,
-    details: z.array(z.object({
-      label: z.enum(['baseAmount', 'commitmentRemaining', 'availableBeforeHoldback', 'holdbackReleaseAmount',
-        'totalClaimsToLastClaimMonth', 'totalForecastToLastClaimMonth', 'totalForecastToPeriodEnd', 'totalPaymentsToDate', 'totalCreditMemos', 'totalCreditMemosForPayment', 'totalCreditMemosForReconciledPeriods']),
-      value: CalculationEvidenceMoneySchema
-    }))
-  })
-})
-
 const defaultConfig: AutomatedPaymentsStreamConfig = { enabledPaymentTypes: ['reimbursement', 'advance'] }
-const defaultPayload: AutomatedPaymentExtensionPayload = { releaseHoldback: false, holdbackReleaseAmount: ZERO_AUTOMATED_PAYMENT_MONEY }
 const MAX_BIGINT = '9223372036854775807'
 const positiveBigint = (value: string) => /^[1-9]\d*$/.test(value) && (value.length < MAX_BIGINT.length || (value.length === MAX_BIGINT.length && value <= MAX_BIGINT))
 export const AutomatedPaymentPositiveBigintIdSchema = z.preprocess(value => {
@@ -130,49 +79,81 @@ const ExplanationNoteSchema = z.enum([
   'explanation.limited_payment', 'explanation.limited_calculation',
   'explanation.limited_commitment', 'explanation.limited_funding'
 ])
-const CalculationEvidenceV2Schema = CalculationEvidenceV1Schema.extend({
-  version: z.literal(2),
-  input: CalculationEvidenceV1Schema.shape.input.extend({
+const ExplanationRowBaseSchema = z.object({ label: ExplanationLabelSchema, operator: z.enum(['+', '−', '×']).optional() })
+const CalculationEvidenceSchema = z.object({
+  version: z.literal(3),
+  capturedAt: z.iso.datetime(),
+  input: z.object({
+    paymentType: z.enum(automatedPaymentTypes), periodEnd: z.number().int().min(0).max(11),
+    currency: AutomatedPaymentCurrencySchema,
     fiscalYearId: z.string().refine(positiveBigint), commitmentTypeId: z.string().refine(positiveBigint),
     periodStart: z.number().int().min(0).max(11), creditMemoBasis: AutomatedPaymentCreditMemoBasisSchema
   }).refine(value => value.periodStart <= value.periodEnd),
-  calculation: CalculationEvidenceV1Schema.shape.calculation.extend({
-    enabled: z.literal(true),
+  calculation: z.object({
+    enabled: z.literal(true), currency: z.string().regex(/^[A-Z]{3}$/),
+    baseAmount: MoneyObjectSchema, ceilingAmount: AutomatedPaymentMoneySchema,
+    suggestedAmount: AutomatedPaymentMoneySchema, holdbackAmount: MoneyObjectSchema,
+    holdbackReleaseAmount: AutomatedPaymentMoneySchema, availableBeforeHoldback: MoneyObjectSchema,
+    details: z.array(z.object({
+      label: z.enum(['baseAmount', 'commitmentRemaining', 'availableBeforeHoldback', 'holdbackReleaseAmount',
+        'totalClaimsToLastClaimMonth', 'totalForecastToLastClaimMonth', 'totalForecastToPeriodEnd', 'totalPaymentsToDate', 'totalCreditMemos', 'totalCreditMemosForReconciledPeriods']),
+      value: MoneyObjectSchema
+    })),
     explanation: z.array(z.object({
       label: ExplanationLabelSchema,
-      rows: z.array(z.object({
-        label: ExplanationLabelSchema, value: CalculationEvidenceMoneySchema,
-        operator: z.enum(['+', '−', '×']).optional(), format: z.literal('percent').optional()
-      }).refine(row => row.format !== 'percent' || (toCents(row.value) >= BigInt(0) && toCents(row.value) <= BigInt(10000)))).min(1),
-      total: z.object({ label: ExplanationLabelSchema, value: CalculationEvidenceMoneySchema }),
+      rows: z.array(z.union([
+        ExplanationRowBaseSchema.extend({ value: MoneyObjectSchema, format: z.never().optional() }),
+        ExplanationRowBaseSchema.extend({ value: PercentageSchema, format: z.literal('percent') })
+      ])).min(1),
+      total: z.object({ label: ExplanationLabelSchema, value: MoneyObjectSchema }),
       notes: z.array(ExplanationNoteSchema).optional(),
-      noteValues: z.object({ reserve: CalculationEvidenceMoneySchema.optional(), requested: CalculationEvidenceMoneySchema.optional(), released: CalculationEvidenceMoneySchema.optional() }).optional(),
+      noteValues: z.object({ reserve: MoneyObjectSchema.optional(), requested: MoneyObjectSchema.optional(), released: MoneyObjectSchema.optional() }).optional(),
       emphasis: z.boolean().optional()
     })).min(1)
   })
 }).refine(value => value.input.currency.toUpperCase() === value.calculation.currency)
-export const AutomatedPaymentCalculationEvidenceSchema = z.discriminatedUnion('version', [CalculationEvidenceV1Schema, CalculationEvidenceV2Schema])
+export const AutomatedPaymentCalculationEvidenceSchema = CalculationEvidenceSchema.superRefine((value, ctx) => {
+  const currency = value.input.currency.toUpperCase()
+  const validate = (amount: Money, path: Array<string | number>) => {
+    if (amount.currency !== currency) ctx.addIssue({ code: 'custom', message: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', path })
+  }
+  for (const key of ['baseAmount', 'ceilingAmount', 'suggestedAmount', 'holdbackAmount', 'holdbackReleaseAmount', 'availableBeforeHoldback'] as const) validate(value.calculation[key], ['calculation', key])
+  value.calculation.details.forEach((row, index) => validate(row.value, ['calculation', 'details', index, 'value']))
+  value.calculation.explanation.forEach((step, index) => {
+    validate(step.total.value, ['calculation', 'explanation', index, 'total', 'value'])
+    step.rows.forEach((row, rowIndex) => { if (row.format !== 'percent') validate(row.value, ['calculation', 'explanation', index, 'rows', rowIndex, 'value']) })
+    for (const [key, amount] of Object.entries(step.noteValues ?? {})) if (amount !== undefined) validate(amount, ['calculation', 'explanation', index, 'noteValues', key])
+  })
+})
 export type AutomatedPaymentCalculationEvidence = z.infer<typeof AutomatedPaymentCalculationEvidenceSchema>
 
 export const AutomatedPaymentExtensionPayloadSchema = z.object({
   releaseHoldback: z.boolean().default(false),
-  holdbackReleaseAmount: z.preprocess(value => value === '' || value === undefined || value === null ? ZERO_AUTOMATED_PAYMENT_MONEY : value, AutomatedPaymentMoneySchema.default(ZERO_AUTOMATED_PAYMENT_MONEY))
-}).transform(value => ({ releaseHoldback: value.releaseHoldback, holdbackReleaseAmount: value.releaseHoldback ? value.holdbackReleaseAmount : ZERO_AUTOMATED_PAYMENT_MONEY }))
-export const AutomatedPaymentCalculateSchema = z.object({
+  holdbackReleaseAmount: AutomatedPaymentMoneySchema.optional()
+}).refine(value => !value.releaseHoldback || value.holdbackReleaseAmount !== undefined, { message: 'GCS_AUTOMATED_PAYMENTS_MONEY_INVALID', path: ['holdbackReleaseAmount'] })
+  .transform(value => value.releaseHoldback ? value : { releaseHoldback: false })
+export const AutomatedPaymentIdentitySchema = z.object({
   egcs_fc_commitmenttype: AutomatedPaymentPositiveBigintIdSchema,
   egcs_fc_fiscalyear: AutomatedPaymentPositiveBigintIdSchema,
   egcs_fc_paymenttype: z.enum(automatedPaymentTypes),
   egcs_fc_currency: AutomatedPaymentCurrencySchema,
   egcs_fc_periodstart: z.coerce.number().int().min(0).max(11),
-  egcs_fc_periodend: z.coerce.number().int().min(0).max(11),
+  egcs_fc_periodend: z.coerce.number().int().min(0).max(11)
+}).refine(value => value.egcs_fc_periodstart <= value.egcs_fc_periodend, { message: 'GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID', path: ['egcs_fc_periodend'] })
+export const AutomatedPaymentCalculateSchema = AutomatedPaymentIdentitySchema.safeExtend({
   egcs_fc_paymentamount: AutomatedPaymentMoneySchema.optional(),
   extensions: z.record(z.string(), z.json()).optional()
-}).refine(value => value.egcs_fc_periodstart <= value.egcs_fc_periodend, { message: 'GCS_AUTOMATED_PAYMENTS_PERIOD_RANGE_INVALID', path: ['egcs_fc_periodend'] }).superRefine((value, ctx) => {
+}).superRefine((value, ctx) => {
+  if (value.egcs_fc_paymentamount !== undefined && value.egcs_fc_paymentamount.currency !== value.egcs_fc_currency.toUpperCase()) {
+    ctx.addIssue({ code: 'custom', message: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', path: ['egcs_fc_paymentamount'] })
+  }
   const payload = value.extensions?.[EXTENSION_KEY]
   if (payload === undefined) return
   const parsed = AutomatedPaymentExtensionPayloadSchema.safeParse(payload)
   if (!parsed.success) {
     for (const issue of parsed.error.issues) ctx.addIssue({ ...issue, path: ['extensions', EXTENSION_KEY, ...issue.path] })
+  } else if (parsed.data.holdbackReleaseAmount !== undefined && parsed.data.holdbackReleaseAmount.currency !== value.egcs_fc_currency.toUpperCase()) {
+    ctx.addIssue({ code: 'custom', message: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', path: ['extensions', EXTENSION_KEY, 'holdbackReleaseAmount'] })
   }
 })
 export const parseAutomatedPaymentsStreamConfig = (value: unknown): AutomatedPaymentsStreamConfig => {
@@ -180,6 +161,6 @@ export const parseAutomatedPaymentsStreamConfig = (value: unknown): AutomatedPay
   return { enabledPaymentTypes: Array.isArray(raw.enabledPaymentTypes) ? raw.enabledPaymentTypes.filter((item): item is AutomatedPaymentType => item === 'reimbursement' || item === 'advance') : defaultConfig.enabledPaymentTypes }
 }
 export const parseAutomatedPaymentExtensionPayload = (value: unknown): AutomatedPaymentExtensionPayload => {
-  const parsed = AutomatedPaymentExtensionPayloadSchema.safeParse(value)
-  return parsed.success ? parsed.data : defaultPayload
+  if (value === undefined) return { releaseHoldback: false }
+  return AutomatedPaymentExtensionPayloadSchema.parse(value)
 }

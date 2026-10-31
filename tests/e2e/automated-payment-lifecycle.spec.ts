@@ -1,8 +1,9 @@
-import { expect, test, type APIResponse, type Page } from '@playwright/test'
-import { addAutomatedPaymentMoney, subtractAutomatedPaymentMoney, parseAutomatedPaymentMoney, type AutomatedPaymentCalculationResult } from '../../shared/automated-payments'
+import { expect, test, type APIResponse, type Page, type Browser } from '@playwright/test'
+import { type AutomatedPaymentCalculationResult } from '../../shared/automated-payments'
+import { addMoney, subtractMoney, compareMoney, sumMoney, minMoney, divideMoney, parseDecimalText, parseCurrencyMoney, majorMoneyText, zeroMoney, type Money } from '@gcs-ssc/extensions/money'
 import { deleteUnsubmittedCommitmentDrafts, postNegativeCorrection } from './correction-fixture'
 import { createPaymentAuditRecipient, createPaymentLifecycleAuditRecorder, resolvePaymentAuditPayee, reviewPaymentAuditWizard, runPaymentAccuracyJourney, selectPaymentAuditPayee, shiftPaymentAuditMoney } from './payment-accuracy-journey'
-import { runPaymentCurrencyJourney } from './payment-currency-journey'
+import { runPaymentCurrencyJourney, runPaymentMinorUnitJourney } from './payment-currency-journey'
 import { runPaymentEmptyFinalFiscalYearJourney } from './payment-empty-final-fy-journey'
 
 const baseUrl = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000'
@@ -35,7 +36,7 @@ type AllocationPayload = {
   budgetYears: Array<{
     id: string | number
     stream_budget_id?: string | number | null
-    program_funding: string | number
+    program_funding: Money
     fiscal_year_display: string
   }>
   streamCommitments: Array<{
@@ -67,7 +68,7 @@ type PaymentCoverageDetail = {
   egcs_fc_fiscalyear: string | number
   lines: Array<{
     egcs_fc_fundingagreementcommitmentline: string | number
-    egcs_fc_amount: string
+    egcs_fc_amount: Money
   }>
 }
 
@@ -99,7 +100,8 @@ type ManagedAgreementTarget = {
 
 let target: ManagedAgreementTarget
 
-const roundCurrency = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100
+const money = (value: string) => parseCurrencyMoney(value, 'CAD')
+const zero = zeroMoney('CAD')
 
 const expectOk = async (response: APIResponse, label: string) => {
   if (response.status() < 200 || response.status() >= 300) {
@@ -216,7 +218,7 @@ const calculateAdvance = async (
   commitmentType: string,
   fiscalYearId: string,
   periodEnd: number,
-  paymentAmount = 0
+  paymentAmount: Money = zero
 ) => {
   const response = await page.request.post(
     `/api/extensions/${AUTOMATED_PAYMENTS_EXTENSION_KEY}/agreements/${target.agreementId}/calculate-payment`,
@@ -232,7 +234,7 @@ const calculateAdvance = async (
         extensions: {
           [AUTOMATED_PAYMENTS_EXTENSION_KEY]: {
             releaseHoldback: false,
-            holdbackReleaseAmount: 0
+            holdbackReleaseAmount: zero
           }
         }
       }
@@ -365,8 +367,7 @@ const ensureAllocationApprovalWorkflow = async (page: Page, programId: string): 
   await expectOk(linkResponse, 'Link allocation Workflow to Stream')
 }
 
-test.describe.serial('Automated payment lifecycle', () => {
-  test.beforeAll(async ({ browser }) => {
+const discoverManagedTarget = async (browser: Browser) => {
     const page = await browser.newPage()
     try {
       await login(page, 'root@example.com', 'password123')
@@ -402,7 +403,10 @@ test.describe.serial('Automated payment lifecycle', () => {
     } finally {
       await page.close()
     }
-  })
+}
+
+test.describe.serial('Automated payment lifecycle', () => {
+  test.beforeAll(async ({ browser }) => await discoverManagedTarget(browser))
   test('chooses agency credit memo policy through required bilingual extension settings', async ({ page }, testInfo) => {
     test.setTimeout(90_000)
     await login(page, 'root@example.com', 'password123')
@@ -472,17 +476,17 @@ test.describe.serial('Automated payment lifecycle', () => {
       egcs_fc_paymenttype: 'advance',
       egcs_fc_periodstart: 6,
       egcs_fc_periodend: 8,
-      egcs_fc_paymentamount: '1.00',
+      egcs_fc_paymentamount: money('1.00'),
       egcs_fc_currency: 'cad'
     } })
     await expectOk(createdResponse, 'Create manual Payment while Agency extension is disabled')
-    const created = await responseJson<IdRow & { egcs_fc_paymentamount: string }>(createdResponse)
-    expect(created.egcs_fc_paymentamount).toBe('1.00')
+    const created = await responseJson<IdRow & { egcs_fc_paymentamount: Money }>(createdResponse)
+    expect(created.egcs_fc_paymentamount).toEqual(money('1.00'))
     const updatedResponse = await page.request.patch(`${manualAgreementBase}/payments/${created.id}`, {
-      data: { egcs_fc_paymentamount: '2.00' }
+      data: { egcs_fc_paymentamount: money('2.00') }
     })
     await expectOk(updatedResponse, 'Update manual Payment without an Agency credit memo choice')
-    expect((await responseJson<{ egcs_fc_paymentamount: string }>(updatedResponse)).egcs_fc_paymentamount).toBe('2.00')
+    expect((await responseJson<{ egcs_fc_paymentamount: Money }>(updatedResponse)).egcs_fc_paymentamount).toEqual(money('2.00'))
   })
   test('keeps calculator UI and server handler unavailable while disabled', async ({ page }) => {
     test.setTimeout(90_000)
@@ -564,7 +568,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await expectOk(retainedPaymentsResponse, 'Fetch retained seeded payments')
     const retainedPayments = await responseJson<{ payments: IdRow[] }>(retainedPaymentsResponse)
     await deleteUnsubmittedCommitmentDrafts(page, target)
-    const paidByYearAndChart = new Map<string, number>()
+    const paidByYearAndChart = new Map<string, Money>()
     for (const payment of retainedPayments.payments) {
       const paymentResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments/${payment.id}`)
       await expectOk(paymentResponse, `Read seeded payment ${payment.id}`)
@@ -582,7 +586,7 @@ test.describe.serial('Automated payment lifecycle', () => {
         const chartId = chartByLineId.get(String(line.egcs_fc_fundingagreementcommitmentline))
         if (!chartId) throw new Error(`No chart was resolved for commitment line ${line.egcs_fc_fundingagreementcommitmentline}.`)
         const key = `${String(paymentDetail.egcs_fc_fiscalyear)}:${chartId}`
-        paidByYearAndChart.set(key, (paidByYearAndChart.get(key) ?? 0) + Number(line.egcs_fc_amount))
+        paidByYearAndChart.set(key, addMoney(paidByYearAndChart.get(key) ?? zero, line.egcs_fc_amount))
       }
     }
 
@@ -695,17 +699,17 @@ test.describe.serial('Automated payment lifecycle', () => {
 
     const allocations = allocationPayload.budgetYears.flatMap(year => {
       const mappings = allocationMappings.filter(mapping => mapping.streamBudgetId === String(year.stream_budget_id))
-      const total = Number(year.program_funding)
-      const paidAmounts = mappings.map(mapping => paidByYearAndChart.get(`${String(year.id)}:${mapping.streamCommitmentId}`) ?? 0)
-      const paidTotal = paidAmounts.reduce((sum, amount) => sum + amount, 0)
-      if (paidTotal > total) throw new Error(`Seeded payments exceed funding for budget year ${year.id}.`)
+      const total = year.program_funding
+      const paidAmounts = mappings.map(mapping => paidByYearAndChart.get(`${String(year.id)}:${mapping.streamCommitmentId}`) ?? zero)
+      const paidTotal = sumMoney(paidAmounts, 'CAD')
+      if (compareMoney(paidTotal, total) > 0) throw new Error(`Seeded payments exceed funding for budget year ${year.id}.`)
       return mappings.map((mapping, index) => ({
         commitmentType,
         streamCommitmentId: mapping.streamCommitmentId,
         agreementBudgetFiscalYearId: String(year.id),
         outcomeId: firstOutcomeId,
         allocationMethod: 'amount' as const,
-        allocationValue: paidAmounts[index]! + (index === 0 ? total - paidTotal : 0)
+        allocationValue: addMoney(paidAmounts[index]!, index === 0 ? subtractMoney(total, paidTotal) : zero)
       }))
     })
 
@@ -756,8 +760,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     await commitmentTypeOption.click()
     await expect(commitmentTypeOption).toBeHidden()
     await expect(commitmentDialog.getByRole('combobox', { name: /^Commitment type/ })).toHaveAttribute('aria-expanded', 'false')
-    const declaredTotal = allocationPayload.budgetYears.reduce((sum, year) =>
-      shiftPaymentAuditMoney(sum, parseAutomatedPaymentMoney(year.program_funding)), '0.00')
+    const declaredTotal = majorMoneyText(sumMoney(allocationPayload.budgetYears.map(year => year.program_funding), 'CAD'))
     const declaredAmount = commitmentDialog.getByRole('textbox', { name: /^Total amount/ })
     await declaredAmount.click()
     await expect(declaredAmount).toBeFocused()
@@ -790,7 +793,7 @@ test.describe.serial('Automated payment lifecycle', () => {
     const approvedCommitment = await responseJson<IdRow & {
       egcs_fc_status: string
       egcs_fc_active: boolean
-      lines: Array<IdRow & { egcs_fc_amount: number | string, fiscal_year_display: string }>
+      lines: Array<IdRow & { egcs_fc_amount: Money, fiscal_year_display: string }>
     }>(approvedCommitmentResponse)
     expect(String(approvedCommitment.egcs_fc_status)).toBe(String(commitmentSuccessStatusId))
     expect(approvedCommitment.egcs_fc_active).toBe(true)
@@ -805,15 +808,15 @@ test.describe.serial('Automated payment lifecycle', () => {
     const targetBudgetYear = [...allocationPayload.budgetYears]
       .map(year => ({
         ...year,
-        remaining: Number(year.program_funding) - allocationMappings
+        remaining: subtractMoney(year.program_funding, sumMoney(allocationMappings
           .filter(mapping => mapping.streamBudgetId === String(year.stream_budget_id))
-          .reduce((sum, mapping) => sum + (paidByYearAndChart.get(`${String(year.id)}:${mapping.streamCommitmentId}`) ?? 0), 0)
+          .map(mapping => paidByYearAndChart.get(`${String(year.id)}:${mapping.streamCommitmentId}`) ?? zero), 'CAD'))
       }))
-      .sort((left, right) => right.remaining - left.remaining)[0]
-    expect(targetBudgetYear?.remaining).toBeGreaterThan(0)
+      .sort((left, right) => compareMoney(right.remaining, left.remaining))[0]
+    expect(compareMoney(targetBudgetYear!.remaining, zero)).toBeGreaterThan(0)
     const fundedCommitmentLine = approvedCommitment.lines.find(line =>
       line.fiscal_year_display === targetBudgetYear?.fiscal_year_display
-      && Number(line.egcs_fc_amount) > 0
+      && compareMoney(line.egcs_fc_amount, zero) > 0
     )
     const fiscalYearId = String(budgetPayload.fiscalYears.find(year =>
       year.fiscal_year_display === fundedCommitmentLine?.fiscal_year_display
@@ -824,8 +827,8 @@ test.describe.serial('Automated payment lifecycle', () => {
     expect(fiscalYearId).not.toBe('')
     expect(budgetLineItemId).not.toBe('')
     const recordCheckpoint = createPaymentLifecycleAuditRecorder(page, testInfo, target)
-    const forecastMonthlyAmount = roundCurrency(targetBudgetYear!.remaining / 3)
-    expect(forecastMonthlyAmount).toBeGreaterThan(0)
+    const forecastMonthlyAmount = divideMoney(targetBudgetYear!.remaining, parseDecimalText('3'), { rounding: 'down' })
+    expect(compareMoney(forecastMonthlyAmount, zero)).toBeGreaterThan(0)
 
     const forecastResponse = await page.request.post(`/api/agreements/${target.agreementId}/forecasts`, {
       data: {
@@ -856,17 +859,14 @@ test.describe.serial('Automated payment lifecycle', () => {
     const initialAdvanceCalculation = await calculateAdvance(page, commitmentType, fiscalYearId, 2)
     await recordCheckpoint({ scenario: 'lifecycle-01-initial-advance', fiscalYearId, commitmentType, periodEnd: 2,
       calculation: initialAdvanceCalculation, note: 'Observed seeded baseline; controlled ledgers independently verify the complete payment formula.' })
-    if (Number(initialAdvanceCalculation.suggestedAmount) <= 0) {
+    if (compareMoney(initialAdvanceCalculation.suggestedAmount, zero) <= 0) {
       throw new Error(`Expected a positive calculated advance: ${JSON.stringify(initialAdvanceCalculation)}`)
     }
-    const commitmentBalance = roundCurrency(approvedCommitment.lines.filter(
+    const commitmentBalance = sumMoney(approvedCommitment.lines.filter(
       line => line.fiscal_year_display === fundedCommitmentLine?.fiscal_year_display
-    ).reduce(
-      (total, line) => total + Number(line.egcs_fc_amount),
-      0
-    ))
-    const initialAdvanceAmount = Math.min(Number(initialAdvanceCalculation.suggestedAmount), commitmentBalance)
-    expect(initialAdvanceAmount).toBeGreaterThan(0)
+    ).map(line => line.egcs_fc_amount), 'CAD')
+    const initialAdvanceAmount = minMoney([initialAdvanceCalculation.suggestedAmount, commitmentBalance], 'CAD')
+    expect(compareMoney(initialAdvanceAmount, zero)).toBeGreaterThan(0)
 
     const paymentsBeforeUiCreateResponse = await page.request.get(`/api/agreements/${target.agreementId}/payments-overview`)
     await expectOk(paymentsBeforeUiCreateResponse, 'List payments before UI creation')
@@ -880,10 +880,10 @@ test.describe.serial('Automated payment lifecycle', () => {
       egcs_fc_paymenttype: 'advance',
       egcs_fc_periodstart: 0,
       egcs_fc_periodend: 2,
-      egcs_fc_paymentamount: roundCurrency(Number(initialAdvanceCalculation.ceilingAmount) + 0.01),
+      egcs_fc_paymentamount: addMoney(initialAdvanceCalculation.ceilingAmount, money('0.01')),
       egcs_fc_currency: 'cad',
       extensions: {
-        [AUTOMATED_PAYMENTS_EXTENSION_KEY]: { releaseHoldback: false, holdbackReleaseAmount: 0 }
+        [AUTOMATED_PAYMENTS_EXTENSION_KEY]: { releaseHoldback: false, holdbackReleaseAmount: zero }
       }
     } })
     const aboveCeilingBody = await aboveCeiling.text()
@@ -910,9 +910,12 @@ test.describe.serial('Automated payment lifecycle', () => {
     await page.getByRole('option', { name: 'Jun', exact: true }).click()
     await expect(paymentDialog.getByRole('heading', { name: 'Maximum payment', exact: true })).toBeVisible()
     const amountInput = paymentDialog.getByRole('textbox', { name: /^Amount/ })
-    const readRenderedAmount = async () => Number((await amountInput.inputValue()).replace(/[^0-9.-]/g, ''))
-    await expect.poll(readRenderedAmount).toBeGreaterThan(0)
-    expect(await readRenderedAmount()).toBe(initialAdvanceAmount)
+    const readRenderedAmount = async () => {
+      const raw = (await amountInput.inputValue()).replace(/[^0-9.-]/g, '')
+      return raw === '' ? null : money(raw)
+    }
+    await expect.poll(async () => { const value = await readRenderedAmount(); return value !== null && compareMoney(value, zero) > 0 }).toBe(true)
+    expect(await readRenderedAmount()).toEqual(initialAdvanceAmount)
     await paymentDialog.getByRole('textbox', { name: 'Comment' }).fill(
       'Lifecycle test advance payment created through the rendered UI.'
     )
@@ -990,10 +993,10 @@ test.describe.serial('Automated payment lifecycle', () => {
     const jvDetailResponse = await page.request.get(`/api/journal-vouchers/${jv.id}`)
     await expectOk(jvDetailResponse, 'Read calculator capacity fixture')
     const jvDetail = await responseJson<{ egcs_fc_agencyfiscalyear: string; egcs_fc_lines: Array<{
-      egcs_fc_kind: string; egcs_fc_commitmentline: string; egcs_fc_chartofaccount: string; egcs_fc_amount: string
+      egcs_fc_kind: string; egcs_fc_commitmentline: string; egcs_fc_chartofaccount: string; egcs_fc_amount: Money
     }> }>(jvDetailResponse)
     const jvAllocations = jvDetail.egcs_fc_lines.filter(line => line.egcs_fc_kind === 'corrected')
-    const sourceAllocation = jvAllocations.find(line => BigInt(line.egcs_fc_amount.replace('.', '')) >= BigInt(1000))!
+    const sourceAllocation = jvAllocations.find(line => compareMoney(line.egcs_fc_amount, money('10')) >= 0)!
     expect(sourceAllocation).toBeTruthy()
     const chartResponse = await page.request.post(`/api/agency/${target.agencyId}/chart-of-accounts`, { data: {
       egcs_ay_fiscalyear: jvDetail.egcs_fc_agencyfiscalyear,
@@ -1014,43 +1017,43 @@ test.describe.serial('Automated payment lifecycle', () => {
       egcs_fc_allocations: [
         ...jvAllocations.map(line => ({ egcs_fc_commitmentline: line.egcs_fc_commitmentline,
           egcs_fc_chartofaccount: line.egcs_fc_chartofaccount,
-          egcs_fc_amount: line === sourceAllocation ? subtractAutomatedPaymentMoney(parseAutomatedPaymentMoney(line.egcs_fc_amount), parseAutomatedPaymentMoney('10.00')) : line.egcs_fc_amount })),
-        { egcs_fc_commitmentline: sourceAllocation.egcs_fc_commitmentline, egcs_fc_chartofaccount: String(linked.id), egcs_fc_amount: '10.00' }
+          egcs_fc_amount: line === sourceAllocation ? subtractMoney(line.egcs_fc_amount, money('10.00')) : line.egcs_fc_amount })),
+        { egcs_fc_commitmentline: sourceAllocation.egcs_fc_commitmentline, egcs_fc_chartofaccount: String(linked.id), egcs_fc_amount: money('10.00') }
       ]
     }
     const editJvResponse = await page.request.patch(`/api/journal-vouchers/${jv.id}`, { data: correctedAllocations })
     await expectOk(editJvResponse, 'Split the capacity-fixture allocation')
-    const readCapacity = async (scenario?: string, expectedCapacity?: string, expectedPaid?: string) => {
+    const readCapacity = async (scenario?: string, expectedCapacity?: Money, expectedPaid?: Money) => {
       const calculation = await calculateAdvance(page, commitmentType, fiscalYearId, 2)
       if (scenario !== undefined) await recordCheckpoint({ scenario, fiscalYearId, commitmentType, periodEnd: 2, calculation,
         expectedCommitmentCapacity: expectedCapacity, expectedRecordedPaid: expectedPaid,
         note: 'Expected capacity is the observed pre-JV baseline plus independently authored signed adjustments; balanced same-year JVs preserve cumulative recorded paid.' })
       return calculation.details.find(detail => detail.label === 'commitmentRemaining')!.value
     }
-    expect(await readCapacity('lifecycle-03-draft-jv-has-no-effect', capacityBefore, junePaidBeforeJv)).toBe(capacityBefore)
+    expect(await readCapacity('lifecycle-03-draft-jv-has-no-effect', capacityBefore, junePaidBeforeJv)).toEqual(capacityBefore)
     await completeEntity(page, 'fundingcasejournalvoucher', String(jv.id), 'Shared capacity service fixture.')
     // Completion starts the current published financial authorization Workflow;
     // pending approval contributes no signed coding capacity.
-    expect(await readCapacity()).toBe(capacityBefore)
+    expect(await readCapacity()).toEqual(capacityBefore)
     await approveAllSteps(approvalPage, 'fundingcasejournalvoucher', String(jv.id))
     const finalizedJv = await page.request.get(`/api/workflows/runtime?entityType=fundingcasejournalvoucher&entityId=${jv.id}&purpose=approval_submission`)
     await expectOk(finalizedJv, 'Read finalized Journal Voucher authorization')
     expect((await finalizedJv.json()).current.runtimeState).toBe('approved')
-    expect(await readCapacity('lifecycle-04-successful-jv-frees-ten', shiftPaymentAuditMoney(capacityBefore, '10.00'), junePaidBeforeJv)).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
+    expect(await readCapacity('lifecycle-04-successful-jv-frees-ten', shiftPaymentAuditMoney(capacityBefore, money('10.00')), junePaidBeforeJv)).toEqual(addMoney(capacityBefore, money('10.00')))
     const reversalResponse = await page.request.post(`/api/journal-vouchers/${jv.id}/reversal`, { data: {
       egcs_fc_requesteddate: '2026-10-01', egcs_fc_narrative_en: 'Restore the calculator baseline.',
       egcs_fc_narrative_fr: 'Rétablir la base du calculateur.'
     } })
     await expectOk(reversalResponse, 'Prepare the capacity-fixture reversal')
     const reversal = await responseJson<IdRow>(reversalResponse)
-    expect(await readCapacity('lifecycle-05-draft-reversal-retains-jv', shiftPaymentAuditMoney(capacityBefore, '10.00'), junePaidBeforeJv)).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
+    expect(await readCapacity('lifecycle-05-draft-reversal-retains-jv', shiftPaymentAuditMoney(capacityBefore, money('10.00')), junePaidBeforeJv)).toEqual(addMoney(capacityBefore, money('10.00')))
     await completeEntity(page, 'fundingcasejournalvoucher', String(reversal.id), 'Restore shared capacity baseline.')
-    expect(await readCapacity()).toBe(addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('10.00')))
+    expect(await readCapacity()).toEqual(addMoney(capacityBefore, money('10.00')))
     await approveAllSteps(approvalPage, 'fundingcasejournalvoucher', String(reversal.id))
     const finalizedReversal = await page.request.get(`/api/workflows/runtime?entityType=fundingcasejournalvoucher&entityId=${reversal.id}&purpose=approval_submission`)
     await expectOk(finalizedReversal, 'Read finalized Journal Voucher reversal authorization')
     expect((await finalizedReversal.json()).current.runtimeState).toBe('approved')
-    expect(await readCapacity('lifecycle-06-successful-reversal-restores-baseline', capacityBefore, junePaidBeforeJv)).toBe(capacityBefore)
+    expect(await readCapacity('lifecycle-06-successful-reversal-restores-baseline', capacityBefore, junePaidBeforeJv)).toEqual(capacityBefore)
 
     // The accounting date is October (fiscal period six); earlier June totals retain their historical cutoff.
     const calculationBeforeCorrection = await calculateAdvance(page, commitmentType, fiscalYearId, 6)
@@ -1068,12 +1071,12 @@ test.describe.serial('Automated payment lifecycle', () => {
     }
     const calculationAfterCorrection = await calculateAdvance(page, commitmentType, fiscalYearId, 6)
     await recordCheckpoint({ scenario: 'lifecycle-08-posted-negative-correction', fiscalYearId, commitmentType, periodEnd: 6,
-      calculation: calculationAfterCorrection, expectedRecordedPaid: shiftPaymentAuditMoney(paidBeforeCorrection, '-1.00'),
-      expectedCommitmentCapacity: shiftPaymentAuditMoney(capacityBefore, '1.00'), note: 'A separate posted -$1 Correction reduces corrected recorded paid and restores $1 capacity; source cash is immutable.' })
+      calculation: calculationAfterCorrection, expectedRecordedPaid: shiftPaymentAuditMoney(paidBeforeCorrection, money('-1.00')),
+      expectedCommitmentCapacity: shiftPaymentAuditMoney(capacityBefore, money('1.00')), note: 'A separate posted -$1 Correction reduces corrected recorded paid and restores $1 capacity; source cash is immutable.' })
     expect(calculationAfterCorrection.details.find(detail => detail.label === 'totalPaymentsToDate')!.value)
-      .toBe(subtractAutomatedPaymentMoney(parseAutomatedPaymentMoney(paidBeforeCorrection), parseAutomatedPaymentMoney('1.00')))
-    const capacityAfterCorrection = addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityBefore), parseAutomatedPaymentMoney('1.00'))
-    expect(await readCapacity('lifecycle-09-june-cutoff-after-correction', shiftPaymentAuditMoney(capacityBefore, '1.00'), junePaidBeforeJv)).toBe(capacityAfterCorrection)
+      .toEqual(subtractMoney(paidBeforeCorrection, money('1.00')))
+    const capacityAfterCorrection = addMoney(capacityBefore, money('1.00'))
+    expect(await readCapacity('lifecycle-09-june-cutoff-after-correction', shiftPaymentAuditMoney(capacityBefore, money('1.00')), junePaidBeforeJv)).toEqual(capacityAfterCorrection)
     const allocationAfterCorrection = await responseJson<{ allocations: unknown; versions: unknown }>(await page.request.get(`/api/extensions/${OUTCOME_ALLOCATION_EXTENSION_KEY}/agreements/${target.agreementId}/allocations`))
     expect(allocationAfterCorrection.allocations).toEqual(allocationBeforeCorrection.allocations)
     expect(allocationAfterCorrection.versions).toEqual(allocationBeforeCorrection.versions)
@@ -1094,26 +1097,26 @@ test.describe.serial('Automated payment lifecycle', () => {
     const finalizedReplacement = await page.request.get(`/api/workflows/runtime?entityType=fundingcasejournalvoucher&entityId=${replacement.id}&purpose=approval_submission`)
     await expectOk(finalizedReplacement, 'Read finalized replacement Journal Voucher authorization')
     expect((await finalizedReplacement.json()).current.runtimeState).toBe('approved')
-    const payableCapacity = addAutomatedPaymentMoney(parseAutomatedPaymentMoney(capacityAfterCorrection), parseAutomatedPaymentMoney('10.00'))
-    expect(await readCapacity('lifecycle-10-successful-replacement', shiftPaymentAuditMoney(capacityBefore, '11.00'), junePaidBeforeJv)).toBe(payableCapacity)
+    const payableCapacity = addMoney(capacityAfterCorrection, money('10.00'))
+    expect(await readCapacity('lifecycle-10-successful-replacement', shiftPaymentAuditMoney(capacityBefore, money('11.00')), junePaidBeforeJv)).toEqual(payableCapacity)
     await expectOk(await page.request.patch(`/api/extensions/streams/${target.streamId}`, { data: {
       extensionKey: AUTOMATED_PAYMENTS_EXTENSION_KEY, enabled: true, config: { enabledPaymentTypes: ['advance'] }
     } }), 'Select manual reimbursement with generated allocation lines')
-    const createReimbursement = (amount: string) => page.request.post(`/api/agreements/${target.agreementId}/payments`, { data: {
+    const createReimbursement = (amount: Money) => page.request.post(`/api/agreements/${target.agreementId}/payments`, { data: {
       egcs_fc_applicantrecipient: payee.id,
       egcs_fc_commitmenttype: commitmentType, egcs_fc_fiscalyear: fiscalYearId,
       egcs_fc_paymenttype: 'reimbursement', egcs_fc_periodstart: 0, egcs_fc_periodend: 2,
       egcs_fc_paymentamount: amount, egcs_fc_currency: 'cad'
     } })
-    const overdraw = await createReimbursement(addAutomatedPaymentMoney(payableCapacity, parseAutomatedPaymentMoney('0.01')))
+    const overdraw = await createReimbursement(addMoney(payableCapacity, money('0.01')))
     expect(overdraw.status(), await overdraw.text()).toBe(400)
     expect(await overdraw.text()).toContain('GCS_OUTCOME_COST_ALLOCATION_PAYMENT_EXCEEDS_REMAINING')
     const generatedResponse = await createReimbursement(payableCapacity)
     await expectOk(generatedResponse, 'Create a Payment using the post-JV capacity')
     const generatedPayment = await responseJson<IdRow>(generatedResponse)
     const generatedDetail = await responseJson<PaymentCoverageDetail>(await page.request.get(`/api/agreements/${target.agreementId}/payments/${generatedPayment.id}`))
-    expect(generatedDetail.lines.reduce((total, line) => addAutomatedPaymentMoney(total, parseAutomatedPaymentMoney(line.egcs_fc_amount)), parseAutomatedPaymentMoney('0.00'))).toBe(payableCapacity)
-    expect(await readCapacity('lifecycle-11-generated-payment-exhausts-capacity', '0.00')).toBe('0.00')
+    expect(generatedDetail.lines.reduce((total, line) => addMoney(total, line.egcs_fc_amount), money('0.00'))).toEqual(payableCapacity)
+    expect(await readCapacity('lifecycle-11-generated-payment-exhausts-capacity', zero)).toEqual(zero)
     await page.goto(`/en/agreements/${target.agreementId}/payments/${generatedPayment.id}`)
     await expect(page.getByRole('tab', { name: 'Payment completion', exact: true })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('post-jv-generated-payment.png'), fullPage: true })
@@ -1290,4 +1293,16 @@ test.describe.serial('Automated payment lifecycle', () => {
     await runPaymentEmptyFinalFiscalYearJourney(page, browser, testInfo, target, { login, approveAll: approveAllSteps, complete: completeEntity })
   })
 
+})
+
+// Each native-currency fixture owns its Stream, Agreement and financial records.
+test.describe('Native Payment minor units', () => {
+  test.beforeAll(async ({ browser }) => await discoverManagedTarget(browser))
+  for (const currency of ['jpy', 'kwd', 'clf', 'mga'] as const) {
+    test(`preserves the smallest ${currency.toUpperCase()} unit through native Payment browser creation`, async ({ page, browser }, testInfo) => {
+      test.setTimeout(300_000)
+      await login(page, 'root@example.com', 'password123')
+      await runPaymentMinorUnitJourney(page, browser, testInfo, target, { login, approveAll: approveAllSteps, complete: completeEntity }, currency)
+    })
+  }
 })

@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { money } from '../fixtures/money'
+import { majorMoneyText, parseCurrencyMoney } from '@gcs-ssc/extensions/money'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
@@ -33,7 +35,7 @@ const mountCalculator = (
     context: {
       agreementId: 'agreement-51'
     },
-    model,
+    model: { currency: 'cad', ...model },
     ...(onResult ? { onResult } : {})
   },
   global: {
@@ -79,8 +81,8 @@ const mountCalculator = (
           return () => h('input', {
             'data-test': 'holdback-amount',
             'data-currency': props.currency,
-            value: props.modelValue,
-            onInput: (event: Event) => emit('update:modelValue', (event.target as HTMLInputElement).value)
+            value: props.modelValue && 'draft' in props.modelValue ? props.modelValue.draft : props.modelValue ? majorMoneyText(props.modelValue) : '',
+            onInput: (event: Event) => { const draft = (event.target as HTMLInputElement).value; try { emit('update:modelValue', draft ? parseCurrencyMoney(draft, props.currency) : undefined) } catch { emit('update:modelValue', { draft }) } }
           })
         }
       })
@@ -138,37 +140,37 @@ describe('automated payment amount calculator', () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       json: async () => ({
-        baseAmount: '10.00',
-        ceilingAmount: '10.00',
-        suggestedAmount: '10.00',
-        holdbackAmount: '0.00',
-        holdbackReleaseAmount: '0.00',
-        availableBeforeHoldback: '93.50',
+        baseAmount: money('10.00', 'CAD'),
+        ceilingAmount: money('10.00', 'CAD'),
+        suggestedAmount: money('10.00', 'CAD'),
+        holdbackAmount: money('0.00', 'CAD'),
+        holdbackReleaseAmount: money('0.00', 'CAD'),
+        availableBeforeHoldback: money('93.50', 'CAD'),
         currency: 'CAD',
         explanation: [
           { label: 'explanation.payment_calculation', rows: [
-            { label: 'explanation.claims', value: '200.00' },
-            { label: 'explanation.forecast', value: '500.00', operator: '+' },
-            { label: 'explanation.claimed_forecast', value: '300.00', operator: '−' },
-            { label: 'explanation.paid', value: '100.00', operator: '−' },
-            { label: 'credit_memo_basis.reconciled_periods', value: '500.00', operator: '+' }
-          ], total: { label: 'explanation.payment_calculation', value: '800.00' } },
+            { label: 'explanation.claims', value: money('200.00', 'CAD') },
+            { label: 'explanation.forecast', value: money('500.00', 'CAD'), operator: '+' },
+            { label: 'explanation.claimed_forecast', value: money('300.00', 'CAD'), operator: '−' },
+            { label: 'explanation.paid', value: money('100.00', 'CAD'), operator: '−' },
+            { label: 'credit_memo_basis.reconciled_periods', value: money('500.00', 'CAD'), operator: '+' }
+          ], total: { label: 'explanation.payment_calculation', value: money('800.00', 'CAD') } },
           { label: 'explanation.holdback', rows: [
-            { label: 'explanation.agreement_total', value: '1000.00' },
+            { label: 'explanation.agreement_total', value: money('1000.00', 'CAD') },
             { label: 'explanation.holdback_rate', value: '10.00', operator: '×', format: 'percent' }
-          ], total: { label: 'explanation.full_holdback', value: '100.00' },
-          notes: ['explanation.reserve_limited'], noteValues: { reserve: '50.00' } },
-          { label: 'explanation.payment_limits', rows: [{ label: 'explanation.payment_calculation', value: '10.00' }],
-            total: { label: 'explanation.maximum', value: '10.00' }, emphasis: true, notes: ['explanation.limited_calculation'] }
+          ], total: { label: 'explanation.full_holdback', value: money('100.00', 'CAD') },
+          notes: ['explanation.reserve_limited'], noteValues: { reserve: money('50.00', 'CAD') } },
+          { label: 'explanation.payment_limits', rows: [{ label: 'explanation.payment_calculation', value: money('10.00', 'CAD') }],
+            total: { label: 'explanation.maximum', value: money('10.00', 'CAD') }, emphasis: true, notes: ['explanation.limited_calculation'] }
         ],
         details: [
-          { label: 'baseAmount', value: '10.00' },
-          { label: 'commitmentRemaining', value: '25.00' },
-          { label: 'availableBeforeHoldback', value: '93.50' },
-          { label: 'holdbackReleaseAmount', value: '0.00' },
-          { label: 'totalPaymentsToDate', value: '50.00' },
-          { label: 'totalCreditMemos', value: '1000.00' },
-          { label: 'totalCreditMemosForReconciledPeriods', value: '500.00' }
+          { label: 'baseAmount', value: money('10.00', 'CAD') },
+          { label: 'commitmentRemaining', value: money('25.00', 'CAD') },
+          { label: 'availableBeforeHoldback', value: money('93.50', 'CAD') },
+          { label: 'holdbackReleaseAmount', value: money('0.00', 'CAD') },
+          { label: 'totalPaymentsToDate', value: money('50.00', 'CAD') },
+          { label: 'totalCreditMemos', value: money('1000.00', 'CAD') },
+          { label: 'totalCreditMemosForReconciledPeriods', value: money('500.00', 'CAD') }
         ]
       })
     })))
@@ -189,53 +191,53 @@ describe('automated payment amount calculator', () => {
     const result = () => wrapper.emitted('result')?.at(-1)?.[0] as GcsPaymentAmountCalculatorResult
     expect(result().explanation).toEqual([
       { label: 'Calculated payment', rows: [
-        { label: 'Reconciled claims', value: 'CAD $200.00' },
-        { label: 'Forecast to period end', value: 'CAD $500.00', operator: '+' },
-        { label: 'Forecast replaced by claims', value: 'CAD $300.00', operator: '−' },
-        { label: 'Payments already made', value: 'CAD $100.00', operator: '−' },
-        { label: 'Credit memos for reconciled periods', value: 'CAD $500.00', operator: '+' }
-      ], total: { label: 'Calculated payment', value: 'CAD $800.00' } },
+        { label: 'Reconciled claims', value: 'CA$200.00' },
+        { label: 'Forecast to period end', value: 'CA$500.00', operator: '+' },
+        { label: 'Forecast replaced by claims', value: 'CA$300.00', operator: '−' },
+        { label: 'Payments already made', value: 'CA$100.00', operator: '−' },
+        { label: 'Credit memos for reconciled periods', value: 'CA$500.00', operator: '+' }
+      ], total: { label: 'Calculated payment', value: 'CA$800.00' } },
       { label: 'Holdback', rows: [
-        { label: 'Agreement total', value: 'CAD $1,000.00' },
+        { label: 'Agreement total', value: 'CA$1,000.00' },
         { label: 'Holdback rate', value: '10%', operator: '×' }
-      ], total: { label: 'Full holdback', value: 'CAD $100.00' },
-      note: 'Rounded down to whole dollars. Only CAD $50.00 remains to hold back.' },
-      { label: 'Payment limits', rows: [{ label: 'Calculated payment', value: 'CAD $10.00' }],
-        total: { label: 'Maximum payment', value: 'CAD $10.00' }, emphasis: true, note: 'Limited by the calculated payment.' }
+      ], total: { label: 'Full holdback', value: 'CA$100.00' },
+      note: 'Rounded down to whole currency units. Only CA$50.00 remains to hold back.' },
+      { label: 'Payment limits', rows: [{ label: 'Calculated payment', value: 'CA$10.00' }],
+        total: { label: 'Maximum payment', value: 'CA$10.00' }, emphasis: true, note: 'Limited by the calculated payment.' }
     ])
     const fetchCalls = vi.mocked(fetch).mock.calls.length
     locale.value = 'fr'
     await flushPromises()
-    expect(result().explanation?.[0]?.rows.at(-1)).toEqual({ label: 'Notes de crédit des périodes rapprochées', value: '500,00\u00a0$ CAD', operator: '+' })
+    expect(result().explanation?.[0]?.rows.at(-1)).toEqual({ label: 'Notes de crédit des périodes rapprochées', value: '500,00\u00a0$CA', operator: '+' })
     expect(result().explanation?.[1]).toEqual({ label: 'Retenue', rows: [
-      { label: 'Total de l’entente', value: '1\u00a0000,00\u00a0$ CAD' },
+      { label: 'Total de l’entente', value: '1\u202f000,00\u00a0$CA' },
       { label: 'Taux de retenue', value: '10%', operator: '×' }
-    ], total: { label: 'Retenue complète', value: '100,00\u00a0$ CAD' },
-    note: 'Arrondie au dollar inférieur. Il ne reste que 50,00\u00a0$ CAD à retenir.' })
+    ], total: { label: 'Retenue complète', value: '100,00\u00a0$CA' },
+    note: 'Arrondie à l’unité monétaire inférieure. Il ne reste que 50,00\u00a0$CA à retenir.' })
     expect(wrapper.text()).toContain('Paiement maximal')
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(fetchCalls)
   })
 
   it.each([
-    ['en', 'USD -$199,999,999,999,999,999.98', '12.34', '12.34'],
-    ['fr', '-199\u00a0999\u00a0999\u00a0999\u00a0999\u00a0999,98\u00a0$ USD', '12.34', '12,34'],
-    ['en', 'USD -$199,999,999,999,999,999.98', '0.01', '0.01'],
-    ['fr', '-199\u00a0999\u00a0999\u00a0999\u00a0999\u00a0999,98\u00a0$ USD', '12.50', '12,5']
+    ['en', '-$199,999,999,999,999,999.98', '12.34', '12.34'],
+    ['fr', '-199\u202f999\u202f999\u202f999\u202f999\u202f999,98\u00a0$US', '12.34', '12,34'],
+    ['en', '-$199,999,999,999,999,999.98', '0.01', '0.01'],
+    ['fr', '-199\u202f999\u202f999\u202f999\u202f999\u202f999,98\u00a0$US', '12.50', '12,5']
   ])('formats signed aggregate operands and fractional percentages in %s', async (language, expectedNegative, percentage, expectedPercentage) => {
     vi.stubGlobal('useI18n', () => ({ locale: ref(language) }))
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({
-      ceilingAmount: '10.00', suggestedAmount: '10.00', currency: 'USD', details: [],
+      ceilingAmount: money('10.00', 'USD'), suggestedAmount: money('10.00', 'USD'), currency: 'USD', details: [],
       explanation: [{ label: 'explanation.holdback', rows: [
-        { label: 'explanation.agreement_total', value: '-199999999999999999.98' },
-        { label: 'explanation.paid', value: '-199999999999999999.98', operator: '−' },
+        { label: 'explanation.agreement_total', value: money('-199999999999999999.98', 'USD') },
+        { label: 'explanation.paid', value: money('-199999999999999999.98', 'USD'), operator: '−' },
         { label: 'explanation.holdback_rate', value: percentage, operator: '×', format: 'percent' }
-      ], total: { label: 'explanation.full_holdback', value: '0.00' }, notes: ['explanation.rounded'] }]
+      ], total: { label: 'explanation.full_holdback', value: money('0.00', 'USD') }, notes: ['explanation.rounded'] }]
     }) })))
     const wrapper = mountCalculator({ commitmentType: '1', fiscalYear: '1', paymentType: 'advance', currency: 'usd', periodStart: 0, periodEnd: 0 })
     await flushPromises()
     const result = wrapper.emitted('result')?.at(-1)?.[0] as GcsPaymentAmountCalculatorResult
     expect(result.explanation?.[0]?.rows.map(row => row.value)).toEqual([expectedNegative, `(${expectedNegative})`, `${expectedPercentage}%`])
-    expect(result.explanation?.[0]?.total.value).toBe(language === 'fr' ? '0,00\u00a0$ USD' : 'USD $0.00')
+    expect(result.explanation?.[0]?.total.value).toBe(language === 'fr' ? '0,00\u00a0$US' : '$0.00')
   })
 
   it('publishes a neutral result without calling the API until every required input is present', async () => {
@@ -252,7 +254,7 @@ describe('automated payment amount calculator', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     expect(wrapper.emitted('extensionPayload')?.at(-1)?.[0]).toEqual({
       releaseHoldback: false,
-      holdbackReleaseAmount: '0.00'
+      holdbackReleaseAmount: money('0.00', 'CAD')
     })
     expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({
       currency: 'CAD',
@@ -332,8 +334,8 @@ describe('automated payment amount calculator', () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
-        ceilingAmount: '10.00',
-        suggestedAmount: '10.00',
+        ceilingAmount: money('10.00', 'CAD'),
+        suggestedAmount: money('10.00', 'CAD'),
         currency: 'CAD',
         details: []
       })
@@ -356,7 +358,7 @@ describe('automated payment amount calculator', () => {
 
     expect(wrapper.emitted('extensionPayload')?.at(-1)?.[0]).toEqual({
       releaseHoldback: true,
-      holdbackReleaseAmount: '4.25'
+      holdbackReleaseAmount: money('4.25', 'CAD')
     })
     expect(fetchMock).toHaveBeenCalledTimes(3)
 
@@ -365,19 +367,19 @@ describe('automated payment amount calculator', () => {
 
     expect(wrapper.emitted('extensionPayload')?.at(-1)?.[0]).toEqual({
       releaseHoldback: true,
-      holdbackReleaseAmount: '4.2x'
+      holdbackReleaseAmount: { draft: '4.2x' }
     })
   })
 
   it('sends the native currency and displays its code without converting cents', async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ ceilingAmount: '10.01', suggestedAmount: '10.01', currency: 'USD', details: [] }) }))
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ ceilingAmount: money('10.01', 'USD'), suggestedAmount: money('10.01', 'USD'), currency: 'USD', details: [] }) }))
     vi.stubGlobal('fetch', fetchMock)
     const wrapper = mountCalculator({ commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'usd' })
     await flushPromises()
     const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown[])[1] && ((fetchMock.mock.calls[0] as unknown[])[1] as RequestInit).body))
     expect(body.egcs_fc_currency).toBe('usd')
-    expect(wrapper.text()).toContain('USD $10.01')
-    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', suggestedAmount: '10.01' })
+    expect(wrapper.text()).toContain('$10.01')
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', suggestedAmount: money('10.01', 'USD') })
     await wrapper.get('[data-test="release-holdback"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-test="holdback-amount"]').attributes('data-currency')).toBe('usd')
@@ -385,7 +387,7 @@ describe('automated payment amount calculator', () => {
 
   it('keeps the calculated ceiling independent of each edit to the actual payment amount', async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({
-      ceilingAmount: '10.00', suggestedAmount: '10.00', currency: 'CAD', details: []
+      ceilingAmount: money('10.00', 'CAD'), suggestedAmount: money('10.00', 'CAD'), currency: 'CAD', details: []
     }) }))
     vi.stubGlobal('fetch', fetchMock)
     const model = { commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'cad', amount: '10.00' }
@@ -400,16 +402,16 @@ describe('automated payment amount calculator', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
     const request = JSON.parse(String((fetchMock.mock.calls[0] as unknown[])[1] && ((fetchMock.mock.calls[0] as unknown[])[1] as RequestInit).body))
     expect(request).not.toHaveProperty('egcs_fc_paymentamount')
-    expect(wrapper.emitted('result')!.at(-1)![0]).toMatchObject({ ceilingAmount: '10.00', error: null, loading: false })
+    expect(wrapper.emitted('result')!.at(-1)![0]).toMatchObject({ ceilingAmount: money('10.00', 'CAD'), error: null, loading: false })
   })
 
   it('resets the holdback election and ignores stale financial evidence when the Agreement changes', async () => {
     let resolveOld!: (value: unknown) => void
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ceilingAmount: '10.00', suggestedAmount: '10.00', currency: 'CAD', details: [] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ceilingAmount: '10.00', suggestedAmount: '10.00', currency: 'CAD', details: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ceilingAmount: money('10.00', 'CAD'), suggestedAmount: money('10.00', 'CAD'), currency: 'CAD', details: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ceilingAmount: money('10.00', 'CAD'), suggestedAmount: money('10.00', 'CAD'), currency: 'CAD', details: [] }) })
       .mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve }))
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ceilingAmount: '20.00', suggestedAmount: '20.00', currency: 'CAD', details: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ceilingAmount: money('20.00', 'CAD'), suggestedAmount: money('20.00', 'CAD'), currency: 'CAD', details: [] }) })
     vi.stubGlobal('fetch', fetchMock)
     const wrapper = mountCalculator({ commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'cad' })
     await flushPromises()
@@ -420,13 +422,13 @@ describe('automated payment amount calculator', () => {
     await wrapper.setProps({ context: { agreementId: 'agreement-52' } })
     await flushPromises()
     expect(wrapper.find('[data-test="holdback-amount"]').exists()).toBe(false)
-    expect(wrapper.emitted('extensionPayload')!.at(-1)![0]).toEqual({ releaseHoldback: false, holdbackReleaseAmount: '0.00' })
+    expect(wrapper.emitted('extensionPayload')!.at(-1)![0]).toEqual({ releaseHoldback: false, holdbackReleaseAmount: money('0.00', 'CAD') })
     const request = JSON.parse(String((fetchMock.mock.calls[3] as unknown[])[1] && ((fetchMock.mock.calls[3] as unknown[])[1] as RequestInit).body))
     expect(fetchMock.mock.calls[3]![0]).toContain('/agreements/agreement-52/calculate-payment')
-    expect(request.extensions['gcs-automated-payments']).toEqual({ releaseHoldback: false, holdbackReleaseAmount: '0.00' })
-    resolveOld({ ok: true, json: async () => ({ ceilingAmount: '99.00', suggestedAmount: '99.00', currency: 'CAD', details: [] }) })
+    expect(request.extensions['gcs-automated-payments']).toEqual({ releaseHoldback: false, holdbackReleaseAmount: money('0.00', 'CAD') })
+    resolveOld({ ok: true, json: async () => ({ ceilingAmount: money('99.00', 'CAD'), suggestedAmount: money('99.00', 'CAD'), currency: 'CAD', details: [] }) })
     await flushPromises()
-    expect(wrapper.emitted('result')!.at(-1)![0]).toMatchObject({ ceilingAmount: '20.00', loading: false, error: null })
+    expect(wrapper.emitted('result')!.at(-1)![0]).toMatchObject({ ceilingAmount: money('20.00', 'CAD'), loading: false, error: null })
   })
 
   it.each(['success', 'failure'])('ignores a stale CAD %s after the USD response', async outcome => {
@@ -442,13 +444,13 @@ describe('automated payment amount calculator', () => {
     await flushPromises()
     await wrapper.setProps({ model: { ...model, currency: 'usd' } })
     await flushPromises()
-    resolveUsd({ ok: true, json: async () => ({ ceilingAmount: '40.00', suggestedAmount: '40.00', currency: 'USD', details: [] }) })
+    resolveUsd({ ok: true, json: async () => ({ ceilingAmount: money('40.00', 'USD'), suggestedAmount: money('40.00', 'USD'), currency: 'USD', details: [] }) })
     await flushPromises()
-    if (outcome === 'success') resolveCad({ ok: true, json: async () => ({ ceilingAmount: '90.00', suggestedAmount: '90.00', currency: 'CAD', details: [] }) })
+    if (outcome === 'success') resolveCad({ ok: true, json: async () => ({ ceilingAmount: money('90.00', 'CAD'), suggestedAmount: money('90.00', 'CAD'), currency: 'CAD', details: [] }) })
     else rejectCad(new Error('stale CAD error'))
     await flushPromises()
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', ceilingAmount: '40.00', suggestedAmount: '40.00', error: null, loading: false })
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', ceilingAmount: money('40.00', 'USD'), suggestedAmount: money('40.00', 'USD'), error: null, loading: false })
     expect(wrapper.text()).not.toContain('stale CAD error')
   })
 
@@ -461,14 +463,14 @@ describe('automated payment amount calculator', () => {
     await flushPromises()
     await wrapper.setProps({ model: { ...model, currency: '' } })
     await flushPromises()
-    resolve({ ok: true, json: async () => ({ ceilingAmount: '90.00', suggestedAmount: '90.00', currency: 'USD', details: [] }) })
+    resolve({ ok: true, json: async () => ({ ceilingAmount: money('90.00', 'USD'), suggestedAmount: money('90.00', 'USD'), currency: 'USD', details: [] }) })
     await flushPromises()
     expect(fetchMock).toHaveBeenCalledOnce()
     expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ ceilingAmount: undefined, suggestedAmount: undefined, loading: false, error: null })
   })
 
   it('rejects a current server result belonging to another currency', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ceilingAmount: '90.00', suggestedAmount: '90.00', currency: 'CAD', details: [] }) })))
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ceilingAmount: money('90.00', 'CAD'), suggestedAmount: money('90.00', 'CAD'), currency: 'CAD', details: [] }) })))
     const wrapper = mountCalculator({ commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'usd' })
     await flushPromises()
     expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', ceilingAmount: undefined, suggestedAmount: undefined,
@@ -485,12 +487,12 @@ describe('automated payment amount calculator', () => {
     await flushPromises()
     await wrapper.setProps({ model: { ...model, currency: 'usd' } })
     await flushPromises()
-    resolveCad({ ok: true, json: async () => ({ ceilingAmount: '90.00', currency: 'CAD', details: [] }) })
+    resolveCad({ ok: true, json: async () => ({ ceilingAmount: money('90.00', 'CAD'), currency: 'CAD', details: [] }) })
     await flushPromises()
     expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', loading: true, ceilingAmount: undefined })
-    resolveUsd({ ok: true, json: async () => ({ ceilingAmount: '40.00', suggestedAmount: '40.00', currency: 'USD', details: [] }) })
+    resolveUsd({ ok: true, json: async () => ({ ceilingAmount: money('40.00', 'USD'), suggestedAmount: money('40.00', 'USD'), currency: 'USD', details: [] }) })
     await flushPromises()
-    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', loading: false, ceilingAmount: '40.00' })
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', loading: false, ceilingAmount: money('40.00', 'USD') })
   })
 
   it('ignores an older localized error body that finishes parsing after a new calculation', async () => {
@@ -498,7 +500,7 @@ describe('automated payment amount calculator', () => {
     const response = new Response('{}', { status: 400 })
     vi.spyOn(response, 'json').mockReturnValue(new Promise(resolve => { resolveError = resolve }))
     vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(response).mockResolvedValueOnce({ ok: true,
-      json: async () => ({ ceilingAmount: '40.00', suggestedAmount: '40.00', currency: 'USD', details: [] }) }))
+      json: async () => ({ ceilingAmount: money('40.00', 'USD'), suggestedAmount: money('40.00', 'USD'), currency: 'USD', details: [] }) }))
     const model = { commitmentType: '1', fiscalYear: '1', paymentType: 'advance', periodStart: 0, periodEnd: 0, currency: 'cad' }
     const wrapper = mountCalculator(model)
     await flushPromises()
@@ -506,7 +508,7 @@ describe('automated payment amount calculator', () => {
     await flushPromises()
     resolveError({ message: 'Old CAD error' })
     await flushPromises()
-    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', ceilingAmount: '40.00', error: null, loading: false })
+    expect(wrapper.emitted('result')?.at(-1)?.[0]).toMatchObject({ currency: 'USD', ceilingAmount: money('40.00', 'USD'), error: null, loading: false })
   })
 
   it('does not publish an in-flight calculation after unmount', async () => {
@@ -517,7 +519,7 @@ describe('automated payment amount calculator', () => {
     await flushPromises()
     const count = received.length
     wrapper.unmount()
-    resolve({ ok: true, json: async () => ({ ceilingAmount: '90.00', currency: 'USD', details: [] }) })
+    resolve({ ok: true, json: async () => ({ ceilingAmount: money('90.00', 'USD'), currency: 'USD', details: [] }) })
     await flushPromises()
     expect(received).toHaveLength(count)
   })

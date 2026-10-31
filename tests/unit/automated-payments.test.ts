@@ -3,54 +3,44 @@ import {
   AutomatedPaymentCalculateSchema,
   AutomatedPaymentMoneySchema,
   AutomatedPaymentPositiveBigintIdSchema,
-  parseAutomatedPaymentExtensionPayload,
-  sumAutomatedPaymentMoney
+  parseAutomatedPaymentExtensionPayload
 } from '../../shared/automated-payments'
+import { sumMoney, moneyFromMinorUnits } from '@gcs-ssc/extensions/money'
+import { money } from '../fixtures/money'
 import { createAutomatedPaymentValidationError } from '../../server/errors'
 
 const validCommitmentTypeId = '9223372036854775807'
 const validFiscalYearId = '1'
 
 describe('gcs automated payments inputs', () => {
-  it('keeps a derived total exact beyond one numeric(19,2) row', () => {
-    expect(sumAutomatedPaymentMoney([
-      AutomatedPaymentMoneySchema.parse('99999999999999999.99'),
-      AutomatedPaymentMoneySchema.parse('99999999999999999.99')
-    ])).toBe('199999999999999999.98')
+  it('keeps a derived total exact beyond one 38-digit persisted row', () => {
+    const amount = moneyFromMinorUnits('9'.repeat(38), 'CAD')
+    expect(sumMoney([amount, amount], 'CAD')).toEqual(moneyFromMinorUnits('199999999999999999999999999999999999998', 'CAD'))
   })
-
-  it.each(['0.001', '1e2', ' 0.10', '00.10', '999999999999999999.99', Number.NaN, Number.POSITIVE_INFINITY])(
-    'rejects invalid or unsafe row money %s', value => {
+  it.each(['0.001', '1e2', ' 0.10', '00.10', '999999999999999999.99', Number.NaN, Number.POSITIVE_INFINITY,
+    { amount: '01', currency: 'CAD' }, { amount: '1.1', currency: 'CAD' }, { amount: '9'.repeat(39), currency: 'CAD' }])(
+    'rejects legacy decimal, numeric or malformed minor-unit money %j', value => {
       expect(AutomatedPaymentMoneySchema.safeParse(value).success).toBe(false)
     }
   )
-
-  it('normalizes extension holdback release payloads', () => {
-    expect(parseAutomatedPaymentExtensionPayload({
-      releaseHoldback: true,
-      holdbackReleaseAmount: '12.50'
-    })).toEqual({
-      releaseHoldback: true,
-      holdbackReleaseAmount: '12.50'
-    })
-
-    expect(parseAutomatedPaymentExtensionPayload({
-      releaseHoldback: false,
-      holdbackReleaseAmount: 12.5
-    })).toEqual({
-      releaseHoldback: false,
-      holdbackReleaseAmount: '0.00'
-    })
+  it('retains elected release Money and omits unelected amounts', () => {
+    expect(parseAutomatedPaymentExtensionPayload({ releaseHoldback: true, holdbackReleaseAmount: money('12.50') }))
+      .toEqual({ releaseHoldback: true, holdbackReleaseAmount: money('12.50') })
+    expect(parseAutomatedPaymentExtensionPayload({ releaseHoldback: false, holdbackReleaseAmount: money('12.50') }))
+      .toEqual({ releaseHoldback: false })
+    expect(parseAutomatedPaymentExtensionPayload(undefined)).toEqual({ releaseHoldback: false })
+    expect(() => parseAutomatedPaymentExtensionPayload({ releaseHoldback: true, holdbackReleaseAmount: 12.5 })).toThrow()
   })
 
   it('uses an extension-owned validation code for invalid period ranges', () => {
     const result = AutomatedPaymentCalculateSchema.safeParse({
+      egcs_fc_currency: 'cad',
       egcs_fc_commitmenttype: validCommitmentTypeId,
       egcs_fc_fiscalyear: validFiscalYearId,
       egcs_fc_paymenttype: 'advance',
       egcs_fc_periodstart: 3,
       egcs_fc_periodend: 2,
-      egcs_fc_paymentamount: 50
+      egcs_fc_paymentamount: money('50')
     })
 
     expect(result.success).toBe(false)
@@ -60,12 +50,13 @@ describe('gcs automated payments inputs', () => {
 
   it('converts calculator validation issues into bilingual extension-owned user errors', () => {
     const result = AutomatedPaymentCalculateSchema.safeParse({
+      egcs_fc_currency: 'cad',
       egcs_fc_commitmenttype: validCommitmentTypeId,
       egcs_fc_fiscalyear: validFiscalYearId,
       egcs_fc_paymenttype: 'advance',
       egcs_fc_periodstart: 3,
       egcs_fc_periodend: 2,
-      egcs_fc_paymentamount: 50
+      egcs_fc_paymentamount: money('50')
     })
 
     expect(result.success).toBe(false)

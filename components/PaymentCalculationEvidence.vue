@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch, type Ref } from 'vue'
+import type { Money } from '@gcs-ssc/extensions/money'
 import type { GcsPaymentEvidenceComponentProps } from '@gcs-ssc/extensions/ui'
 import { ExtensionButton, ExtensionSection, ExtensionPaymentCalculationBreakdown, useExtensionApi, useExtensionI18n } from '@gcs-ssc/extensions/ui'
 import { AutomatedPaymentCalculationEvidenceSchema, type AutomatedPaymentCalculationEvidence } from '../shared/automated-payments'
@@ -17,33 +18,9 @@ onBeforeUnmount(() => {
   sequence += 1
 })
 
-const detailLabelKeys: Record<string, keyof typeof messages.en> = {
-  baseAmount: 'details.base_amount', commitmentRemaining: 'details.commitment_remaining',
-  availableBeforeHoldback: 'details.available_before_holdback', holdbackReleaseAmount: 'details.holdback_release_amount',
-  totalClaimsToLastClaimMonth: 'details.total_claims_to_last_claim_month',
-  totalForecastToLastClaimMonth: 'details.total_forecast_to_last_claim_month',
-  totalForecastToPeriodEnd: 'details.total_forecast_to_period_end', totalPaymentsToDate: 'details.total_payments_to_date',
-  totalCreditMemos: 'details.total_credit_memos',
-  totalCreditMemosForPayment: 'details.total_credit_memos_for_payment',
-  totalCreditMemosForReconciledPeriods: 'details.total_credit_memos_for_reconciled_periods'
-}
-/**
- * Preserves historical formatting while sharing the new wizard ledger formatter.
- * @param value Canonical retained amount.
- * @returns Localized exact currency text.
- */
-const formatMoney = (value: string): string => {
-  if (evidence.value?.version === 2) return formatCalculationMoney(value, evidence.value.calculation.currency, locale.value)
-  const [whole = '0', fraction = '00'] = value.split('.')
-  const formatter = new Intl.NumberFormat(locale.value, {
-    style: 'currency', currency: evidence.value!.calculation.currency,
-    minimumFractionDigits: 2, maximumFractionDigits: 2
-  })
-  const units = value.startsWith('-') && BigInt(whole) === BigInt(0) ? -0 : BigInt(whole)
-  return formatter.formatToParts(units).map(part => part.type === 'fraction' ? fraction : part.value).join('')
-}
+const formatMoney = (value: Money): string => formatCalculationMoney(value, locale.value)
 const explanation = computed(() => formatCalculationExplanation(
-  evidence.value?.version === 2 ? evidence.value.calculation.explanation : undefined,
+  evidence.value?.calculation.explanation,
   locale.value, t, formatMoney
 ))
 const capturedAt = computed(() => evidence.value
@@ -86,17 +63,7 @@ watch(() => context.ownerId, loadEvidence, { immediate: true })
         <p class="text-sm text-muted">
           {{ t('evidence_retained', { date: capturedAt }) }}
         </p>
-        <ExtensionPaymentCalculationBreakdown v-if="evidence.version === 2" :explanation="explanation" />
-        <dl v-else class="divide-y divide-default">
-          <div v-for="detail in evidence.calculation.details" :key="detail.label" class="flex min-w-0 flex-col gap-2 py-3 sm:flex-row sm:justify-between sm:gap-6">
-            <dt class="min-w-0 text-sm">
-              {{ t(detailLabelKeys[detail.label]!) }}
-            </dt>
-            <dd class="min-w-0 wrap-anywhere text-sm font-semibold tabular-nums sm:text-right">
-              {{ formatMoney(detail.value) }}
-            </dd>
-          </div>
-        </dl>
+        <ExtensionPaymentCalculationBreakdown :explanation="explanation" />
       </template>
     </div>
   </ExtensionSection>

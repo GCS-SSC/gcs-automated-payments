@@ -73,7 +73,7 @@ export const createNativeAgreementThroughUi = async (page: Page, testInfo: TestI
   await choose(/^Holdback basis/, label(bases, input.egcs_fc_holdbackbasis))
   const currency = page.getByRole('combobox', { name: /^Currency/ })
   await expect(currency).toHaveAttribute('aria-required', 'true')
-  const currencyDisplay = new Intl.DisplayNames(['en'], { type: 'currency' }).of(input.egcs_fc_currency.toUpperCase())!
+  const currencyDisplay = await page.evaluate(code => new Intl.DisplayNames(['en'], { type: 'currency' }).of(code) ?? code, input.egcs_fc_currency.toUpperCase())
   await currency.focus()
   await currency.press('Enter')
   await page.getByRole('option', { name: currencyDisplay, exact: true }).press('Enter')
@@ -92,7 +92,7 @@ export const createNativeAgreementThroughUi = async (page: Page, testInfo: TestI
   const financialId = financialIds.find(row => String(row.id) === input.egcs_fc_applicantrecipients[0]!.egcs_fc_agencyfinancialid)!
   expect(financialId, 'The explicitly selected active Agency Financial ID').toBeTruthy()
   await choose(/—.*Financial System ID/, String(financialId.egcs_ar_financialsystemid))
-  await page.screenshot({ path: testInfo.outputPath('native-USD-Agreement-create-filled.png'), fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath(`native-${input.egcs_fc_currency.toUpperCase()}-Agreement-create-filled.png`), fullPage: true })
   const response = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/agreements')
   await page.getByRole('button', { name: 'Add', exact: true }).click()
   const createdResponse = await response
@@ -112,6 +112,6 @@ export const createNativeAgreementThroughUi = async (page: Page, testInfo: TestI
   const profile = await persisted.json() as Row
   expect(profile.egcs_fc_currency).toBe(input.egcs_fc_currency)
   expect(profile.egcs_fc_agreementnumber).toBe(input.egcs_fc_agreementnumber)
-  await page.screenshot({ path: testInfo.outputPath('native-USD-Agreement-created-reloaded-immutable.png'), fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath(`native-${input.egcs_fc_currency.toUpperCase()}-Agreement-created-reloaded-immutable.png`), fullPage: true })
   return { created, submitted, profile, saved_through_ui: true, reloaded: true, immutable_currency_control_disabled: true }
 }

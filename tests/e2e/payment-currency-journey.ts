@@ -1,3 +1,4 @@
+import { parseCurrencyMoney, parseMoney, majorMoneyText, type Money } from '@gcs-ssc/extensions/money'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, type Browser, type Page, type TestInfo } from '@playwright/test'
@@ -12,16 +13,15 @@ type Helpers = {
   approveAll: (page: Page, entityType: string, id: string) => Promise<void>
   complete: (page: Page, entityType: string, id: string, comments: string) => Promise<void>
 }
-type Calculation = {
-  currency: string; suggestedAmount: string; ceilingAmount: string; baseAmount: string
-  holdbackAmount: string; holdbackReleaseAmount: string; availableBeforeHoldback: string
-  details: Array<{ label: string; value: string }>
-}
+type Calculation = import('../../shared/automated-payments').AutomatedPaymentCalculationResult
 
 // Independent exact-cent oracle; no production financial arithmetic is imported.
 const cents = (value: string) => {
-  expect(value, 'Exact native money text').toMatch(/^-?\d+\.\d{2}$/)
-  return BigInt(value.replace('.', ''))
+  expect(value, 'Exact CAD/USD major-unit money text').toMatch(/^-?\d+(?:\.\d{1,2})?$/)
+  const negative = value.startsWith('-')
+  const [whole = '0', fraction = ''] = (negative ? value.slice(1) : value).split('.')
+  const minor = BigInt(whole) * BigInt(100) + BigInt(fraction.padEnd(2, '0'))
+  return negative ? -minor : minor
 }
 const amount = (value: bigint): string => {
   const absolute = value < BigInt(0) ? -value : value
@@ -30,7 +30,11 @@ const amount = (value: bigint): string => {
 const sum = (values: string[]) => amount(values.reduce((total, value) => total + cents(value), BigInt(0)))
 const min = (...values: bigint[]) => values.reduce((a, b) => a < b ? a : b)
 const positive = (value: bigint) => value > BigInt(0) ? value : BigInt(0)
-const csvCell = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`
+const csvCell = (value: unknown) => {
+  const text = value && typeof value === 'object' && 'amount' in value && 'currency' in value
+    ? majorMoneyText(parseMoney(value)) : String(value ?? '')
+  return `"${text.replaceAll('"', '""')}"`
+}
 
 // API probes request nonpersistent HTTP connections across browser UI waits.
 const apiRequestHeaders = { Connection: 'close' }
@@ -106,10 +110,10 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
   const fixture = await preparePaymentAuditFixture(page, source)
   const { owner, agreementBase, streamBase, fiscal, fiscalYear, budgetLine, category, linkedChart, authoredStreamBudget, updatedProgramBudget } = fixture
   const usdProgramBudget = await post(page, `/api/transfer-payments/${owner.programId}/budgets`, {
-    egcs_tp_fiscalyear: fiscal.id, egcs_tp_currency: 'usd', egcs_tp_totalbudget: '1000.07', egcs_tp_overcommitthreshold: 0
+    egcs_tp_fiscalyear: fiscal.id, egcs_tp_currency: 'usd', egcs_tp_totalbudget: parseCurrencyMoney('1000.07', 'usd'), egcs_tp_overcommitthreshold: 0
   })
   const usdStreamBudget = await post(page, `${streamBase}/budgets`, {
-    egcs_tp_transferpaymentbudget: usdProgramBudget.id, egcs_tp_totalbudget: '1000.07', egcs_tp_overcommitthreshold: 0
+    egcs_tp_transferpaymentbudget: usdProgramBudget.id, egcs_tp_totalbudget: parseCurrencyMoney('1000.07', 'usd'), egcs_tp_overcommitthreshold: 0
   })
   const usdChart = await post(page, `/api/agency/${owner.agencyId}/chart-of-accounts`, {
     egcs_ay_fiscalyear: fiscal.id, egcs_ay_currency: 'usd',
@@ -133,7 +137,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
   const usdBudgetLine = await post(page, `${usdBase}/budget-line-items`, {
     egcs_fc_fundingagreementbudgetfiscalyear: usdFiscalYear.id, egcs_fc_organizationcostcategory: category.id,
     egcs_fc_costsubsection: 'Native USD payment audit', egcs_fc_description: 'Separate native currency limits',
-    egcs_fc_totalamount: '600.07', egcs_fc_programfunding: '600.07', egcs_fc_fundingsources: [], egcs_fc_currency: 'usd'
+    egcs_fc_totalamount: parseCurrencyMoney('600.07', 'usd'), egcs_fc_programfunding: parseCurrencyMoney('600.07', 'usd'), egcs_fc_fundingsources: [], egcs_fc_currency: 'usd'
   })
   const approver = await browser.newPage()
   await helpers.login(approver, 'user03@example.com', 'password123')
@@ -204,7 +208,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       await reject(currency, 'agreement-budget-currency-mismatch', `${bases[currency]}/budget-line-items`, {
         egcs_fc_fundingagreementbudgetfiscalyear: years[currency].id, egcs_fc_organizationcostcategory: category.id,
         egcs_fc_costsubsection: 'Must reject mixed currency', egcs_fc_description: 'Wrong native denomination',
-        egcs_fc_totalamount: '0.01', egcs_fc_programfunding: '0.01', egcs_fc_fundingsources: [], egcs_fc_currency: opposite
+        egcs_fc_totalamount: parseCurrencyMoney('0.01', opposite), egcs_fc_programfunding: parseCurrencyMoney('0.01', opposite), egcs_fc_fundingsources: [], egcs_fc_currency: opposite
       })
       record(currency, 'budget', currency === 'cad' ? budgetLine.id : usdBudgetLine.id, '', budgets[currency])
       const agreementBase = bases[currency]
@@ -228,7 +232,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       commitmentIds[currency] = created.id
       commitmentType = String(created.egcs_fc_type)
       await reject(currency, 'agreement-commitment-currency-mismatch', `${agreementBase}/commitments`, {
-        egcs_fc_type: created.egcs_fc_type, egcs_fc_currency: opposite, egcs_fc_totalamount: budgets[currency]
+        egcs_fc_type: created.egcs_fc_type, egcs_fc_currency: opposite, egcs_fc_totalamount: parseCurrencyMoney(budgets[currency], opposite)
       })
       const persistedCommitment = await read<Row>(page, `${agreementBase}/commitments/${created.id}`)
       expect(persistedCommitment.egcs_fc_currency, 'Persisted native Commitment detail currency').toBe(currency)
@@ -253,14 +257,14 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       const wrongCoding = await page.request.post(`${agreementBase}/commitment-lines`, { headers: apiRequestHeaders, data: {
         egcs_fc_commitment: created.id, egcs_fc_commitmentlinenumber: 2,
         egcs_fc_transferpaymentstreamchartofaccount: currency === 'cad' ? usdLinkedChart.id : linkedChart.id,
-        egcs_fc_amount: '0.01'
+        egcs_fc_amount: parseCurrencyMoney('0.01', currency)
       } })
       expect(wrongCoding.status()).toBe(400)
       expect((await wrongCoding.json()).data.code).toBe('INVALID_AGREEMENT_CHART_OF_ACCOUNT')
       const overNativeLimit = await page.request.post(`${agreementBase}/commitment-lines`, { headers: apiRequestHeaders, data: {
         egcs_fc_commitment: created.id, egcs_fc_commitmentlinenumber: 2,
         egcs_fc_transferpaymentstreamchartofaccount: currency === 'cad' ? linkedChart.id : usdLinkedChart.id,
-        egcs_fc_amount: '0.01'
+        egcs_fc_amount: parseCurrencyMoney('0.01', currency)
       } })
       expect(overNativeLimit.status()).toBe(400)
       expect((await overNativeLimit.json()).data.code).toBe('AGREEMENT_COMMITMENT_EXCEEDS_TOTAL')
@@ -269,7 +273,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       const beforeFundingProbe = await read(page, `${agreementBase}/commitments-overview`)
       const overNativeFunding = await page.request.post(`${agreementBase}/commitments`, { headers: apiRequestHeaders, data: {
         egcs_fc_type: created.egcs_fc_type, egcs_fc_currency: currency,
-        egcs_fc_totalamount: amount(cents(budgets[currency]) + BigInt(1))
+        egcs_fc_totalamount: parseCurrencyMoney(amount(cents(budgets[currency]) + BigInt(1)), currency)
       } })
       expect(overNativeFunding.status()).toBe(400)
       expect((await overNativeFunding.json()).data.code).toBe('AGREEMENT_COMMITMENT_EXCEEDS_PROGRAM_FUNDING')
@@ -287,13 +291,13 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       const forecast = await post(page, `${agreementBase}/forecasts`, { egcs_fc_fiscalyear: years[currency].id })
       await reject(currency, 'agreement-forecast-currency-mismatch', `${agreementBase}/forecast-line-items`, {
         egcs_fc_agreementforecast: forecast.id, egcs_fc_fundingagreementbudgetlineitem: currency === 'cad' ? budgetLine.id : usdBudgetLine.id,
-        egcs_fc_month: 3, egcs_fc_amount: '0.01', egcs_fc_totalamount: '0.01',
+        egcs_fc_month: 3, egcs_fc_amount: parseCurrencyMoney('0.01', currency === 'cad' ? 'usd' : 'cad'), egcs_fc_totalamount: parseCurrencyMoney('0.01', currency === 'cad' ? 'usd' : 'cad'),
         egcs_fc_currency: currency === 'cad' ? 'usd' : 'cad'
       })
       for (const [month, value] of forecasts[currency].entries()) {
         const line = await post(page, `${agreementBase}/forecast-line-items`, {
           egcs_fc_agreementforecast: forecast.id, egcs_fc_fundingagreementbudgetlineitem: currency === 'cad' ? budgetLine.id : usdBudgetLine.id,
-          egcs_fc_month: month, egcs_fc_amount: value, egcs_fc_totalamount: value, egcs_fc_currency: currency
+          egcs_fc_month: month, egcs_fc_amount: parseCurrencyMoney(value, currency), egcs_fc_totalamount: parseCurrencyMoney(value, currency), egcs_fc_currency: currency
         })
         record(currency, 'forecast', line.id, month, value)
       }
@@ -319,21 +323,21 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       const agreementBase = bases[currency]
       const body = { egcs_fc_commitmenttype: commitmentType, egcs_fc_fiscalyear: years[currency].id, egcs_fc_currency: currency,
         egcs_fc_paymenttype: paymentType, egcs_fc_periodstart: 0, egcs_fc_periodend: periodEnd,
-        extensions: { 'gcs-automated-payments': { releaseHoldback: cents(release) > BigInt(0), holdbackReleaseAmount: release } } }
+        extensions: { 'gcs-automated-payments': { releaseHoldback: cents(release) > BigInt(0), holdbackReleaseAmount: parseCurrencyMoney(release, currency) } } }
       const actual = await post<Calculation>(page, `/api/extensions/gcs-automated-payments/agreements/${owners[currency].agreementId}/calculate-payment`, body)
       const details = Object.fromEntries(actual.details.map(detail => [detail.label, detail.value]))
       expect(actual.currency.toLowerCase()).toBe(currency)
-      expect(details.totalClaimsToLastClaimMonth).toBe(claims[currency])
-      expect(details.totalForecastToLastClaimMonth).toBe(forecastToClaim)
-      expect(details.totalForecastToPeriodEnd).toBe(forecastToPeriod)
-      expect(details.totalPaymentsToDate).toBe(paid[currency])
-      expect(details.commitmentRemaining).toBe(amount(capacity))
-      expect(actual.holdbackAmount).toBe(holdbacks[currency])
-      expect(actual.availableBeforeHoldback).toBe(amount(ordinary))
-      expect(actual.holdbackReleaseAmount).toBe(amount(released))
-      expect(actual.baseAmount).toBe(amount(base))
-      expect(actual.ceilingAmount).toBe(expected)
-      expect(actual.suggestedAmount).toBe(expected)
+      expect(details.totalClaimsToLastClaimMonth).toEqual(parseCurrencyMoney(claims[currency], currency))
+      expect(details.totalForecastToLastClaimMonth).toEqual(parseCurrencyMoney(forecastToClaim, currency))
+      expect(details.totalForecastToPeriodEnd).toEqual(parseCurrencyMoney(forecastToPeriod, currency))
+      expect(details.totalPaymentsToDate).toEqual(parseCurrencyMoney(paid[currency], currency))
+      expect(details.commitmentRemaining).toEqual(parseCurrencyMoney(amount(capacity), currency))
+      expect(actual.holdbackAmount).toEqual(parseCurrencyMoney(holdbacks[currency], currency))
+      expect(actual.availableBeforeHoldback).toEqual(parseCurrencyMoney(amount(ordinary), currency))
+      expect(actual.holdbackReleaseAmount).toEqual(parseCurrencyMoney(amount(released), currency))
+      expect(actual.baseAmount).toEqual(parseCurrencyMoney(amount(base), currency))
+      expect(actual.ceilingAmount).toEqual(parseCurrencyMoney(expected, currency))
+      expect(actual.suggestedAmount).toEqual(parseCurrencyMoney(expected, currency))
       scenarios.push({ scenario_id: scenario, agreement_id: owners[currency].agreementId, fiscal_year_id: years[currency].id, fiscal_year: fiscal.egcs_ay_fiscalyeardisplay,
         currency, agreement_currency: currency, paired_agreements_by_currency: JSON.stringify(Object.fromEntries(Object.entries(owners).map(([code, value]) => [code, value.agreementId]))), payment_type: paymentType, period_end: periodEnd, native_budget: budgets[currency], native_commitment: budgets[currency],
         program_fy_budget_id: currency === 'cad' ? updatedProgramBudget.id : usdProgramBudget.id,
@@ -388,14 +392,14 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       await dialog.getByRole('button', { name: 'Add', exact: true }).click()
       const payment = await (await response).json() as Row
       expect(payment.egcs_fc_currency).toBe(currency)
-      expect(payment.egcs_fc_paymentamount).toBe(expected)
+      expect(payment.egcs_fc_paymentamount).toEqual(parseCurrencyMoney(expected, currency))
       expect(payment.egcs_fc_applicantrecipient).toBe(payees[currency].id)
       if (!raw.some(row => row.boundary === 'agreement-payment-currency-mismatch' && row.agreement_currency === currency)) {
         await reject(currency, 'agreement-payment-currency-mismatch', `${agreementBase}/payments`, {
           egcs_fc_applicantrecipient: payees[currency].id,
           egcs_fc_commitmenttype: commitmentType, egcs_fc_fiscalyear: years[currency].id,
           egcs_fc_paymenttype: paymentType, egcs_fc_periodstart: 0, egcs_fc_periodend: periodEnd,
-          egcs_fc_paymentamount: '0.01', egcs_fc_currency: currency === 'cad' ? 'usd' : 'cad'
+          egcs_fc_paymentamount: parseCurrencyMoney('0.01', currency === 'cad' ? 'usd' : 'cad'), egcs_fc_currency: currency === 'cad' ? 'usd' : 'cad'
         })
         await reject(currency, 'calculator-agreement-currency-mismatch',
           `/api/extensions/gcs-automated-payments/agreements/${owners[currency].agreementId}/calculate-payment`, {
@@ -407,14 +411,14 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       const oppositeCurrency: Currency = currency === 'cad' ? 'usd' : 'cad'
       const wrongLine = await page.request.post(`${agreementBase}/payment-lines`, { headers: apiRequestHeaders, data: {
         egcs_fc_fundingagreementpayment: payment.id,
-        egcs_fc_fundingagreementcommitmentline: commitmentLines[oppositeCurrency], egcs_fc_amount: '0.01'
+        egcs_fc_fundingagreementcommitmentline: commitmentLines[oppositeCurrency], egcs_fc_amount: parseCurrencyMoney('0.01', currency)
       } })
       expect(wrongLine.status()).toBe(400)
       expect((await wrongLine.json()).data.code).toBe('INVALID_AGREEMENT_PAYMENT_COMMITMENT_LINE')
       raw.push({ boundary: 'payment-native-allocation', scenario, currency, payment,
         rejected_commitment_line_id: commitmentLines[oppositeCurrency], rejected_amount: '0.01', rejected_status: wrongLine.status() })
       await post(page, `${agreementBase}/payment-lines`, {
-        egcs_fc_fundingagreementpayment: payment.id, egcs_fc_fundingagreementcommitmentline: commitmentLines[currency], egcs_fc_amount: expected
+        egcs_fc_fundingagreementpayment: payment.id, egcs_fc_fundingagreementcommitmentline: commitmentLines[currency], egcs_fc_amount: parseCurrencyMoney(expected, currency)
       })
       await complete('fundingcasepayment', payment.id)
       scenarios.at(-1)!.selected_payment = expected
@@ -441,12 +445,12 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
         expect(claim.egcs_fc_applicantrecipient).toBe(payees[currency].id)
         const line = await post(page, `${agreementBase}/claim-line-items`, { egcs_fc_fundingagreementclaim: claim.id,
           egcs_fc_fundingagreementbudgetlineitem: currency === 'cad' ? budgetLine.id : usdBudgetLine.id,
-          egcs_fc_description: `Native ${currency} Claim month ${month}`, egcs_fc_amount: original,
-          egcs_fc_totalamount: original, egcs_fc_currency: currency })
+          egcs_fc_description: `Native ${currency} Claim month ${month}`, egcs_fc_amount: parseCurrencyMoney(original, currency),
+          egcs_fc_totalamount: parseCurrencyMoney(original, currency), egcs_fc_currency: currency })
         if (month === 0) await reject(currency, 'agreement-claim-currency-mismatch', `${agreementBase}/claim-line-items`, {
           egcs_fc_fundingagreementclaim: claim.id,
           egcs_fc_fundingagreementbudgetlineitem: currency === 'cad' ? budgetLine.id : usdBudgetLine.id,
-          egcs_fc_description: 'Wrong native denomination', egcs_fc_amount: '0.01', egcs_fc_totalamount: '0.01',
+          egcs_fc_description: 'Wrong native denomination', egcs_fc_amount: parseCurrencyMoney('0.01', currency === 'cad' ? 'usd' : 'cad'), egcs_fc_totalamount: parseCurrencyMoney('0.01', currency === 'cad' ? 'usd' : 'cad'),
           egcs_fc_currency: currency === 'cad' ? 'usd' : 'cad'
         })
         record(currency, 'submitted_claim', line.id, month, original)
@@ -455,7 +459,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
         const reconciliation = await post(page, `${agreementBase}/claim-reconciles`, {
           egcs_fc_fundingagreementclaim: claim.id, egcs_fc_isfinal: true })
         const acceptedLine = await post(page, `${agreementBase}/claim-reconcile-line-items`, {
-          egcs_fc_fundingagreementclaimreconcile: reconciliation.id, egcs_fc_lineitem: line.id, egcs_fc_reconciled: accepted })
+          egcs_fc_fundingagreementclaimreconcile: reconciliation.id, egcs_fc_lineitem: line.id, egcs_fc_reconciled: parseCurrencyMoney(accepted, currency) })
         record(currency, 'reconciliation', acceptedLine.id, month, accepted)
         await complete('fundingclaimreconcile', reconciliation.id)
         claims[currency] = sum([claims[currency], accepted])
@@ -480,9 +484,9 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
     await check('currency-11-CAD-overpaid-claims-no-reimbursement', 'cad', 'reimbursement', 2)
     await check('currency-12-USD-exhausted-despite-CAD-values', 'usd', 'reimbursement', 2, '100.00')
     expect(paid).toEqual({ cad: '1000.05', usd: '600.07' })
-    const usdClaims = await read<{ lineItems: Array<{ egcs_fc_amount: string }> }>(
+    const usdClaims = await read<{ lineItems: Array<{ egcs_fc_amount: Money }> }>(
       page, `${usdBase}/claims-overview`)
-    expect(sum(usdClaims.lineItems.map(line => line.egcs_fc_amount))).toBe('600.07')
+    expect(sum(usdClaims.lineItems.map(line => majorMoneyText(line.egcs_fc_amount)))).toBe('600.07')
     await persist()
     await verifyFundingCurrencyControls(page, testInfo, owner)
     for (const currency of ['cad', 'usd'] as const) {
@@ -497,6 +501,131 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
         currency, disabled: await control.isDisabled(), accessible_display: await control.innerText(), result: 'PASS' })
     }
     await persist()
+  } finally {
+    await approver.close()
+  }
+}
+
+/** Proves native minor units survive the actual calculator, Payment editor and saved API packet. */
+export const runPaymentMinorUnitJourney = async (
+  page: Page, browser: Browser, testInfo: TestInfo, source: Owner, helpers: Helpers,
+  currency: 'jpy' | 'kwd' | 'clf' | 'mga'
+) => {
+  const fixture = await preparePaymentAuditFixture(page, source)
+  const { owner, streamBase, fiscal, category } = fixture
+  const smallestMajor = currency === 'jpy' ? '1' : currency === 'kwd' ? '0.001' : currency === 'clf' ? '0.0001' : '0.2'
+  const smallest = parseCurrencyMoney(smallestMajor, currency)
+  expect(smallest).toEqual({ amount: '1', currency: currency.toUpperCase() })
+  const budget = parseCurrencyMoney('1000', currency)
+  const programBudget = await post(page, `/api/transfer-payments/${owner.programId}/budgets`, {
+    egcs_tp_fiscalyear: fiscal.id, egcs_tp_currency: currency, egcs_tp_totalbudget: budget, egcs_tp_overcommitthreshold: 0
+  })
+  await post(page, `${streamBase}/budgets`, {
+    egcs_tp_transferpaymentbudget: programBudget.id, egcs_tp_totalbudget: budget, egcs_tp_overcommitthreshold: 0
+  })
+  const chart = await post(page, `/api/agency/${owner.agencyId}/chart-of-accounts`, {
+    egcs_ay_fiscalyear: fiscal.id, egcs_ay_currency: currency,
+    egcs_ay_accountingdimensions: [{ label_en: 'Account', label_fr: 'Compte', value: `Minor-${currency}-${owner.agreementId}` }]
+  })
+  const linkedChart = await post(page, `${streamBase}/chart-of-accounts`, { egcs_tp_agencychartofaccount: chart.id })
+  const native = await createNativeAgreementThroughUi(page, testInfo, owner.programId, {
+    ...fixture.agreementInput, egcs_fc_currency: currency,
+    egcs_fc_agreementnumber: `${currency.toUpperCase()}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`,
+    egcs_fc_financialsystemnumber: fixture.agreementInput.egcs_fc_financialsystemnumber + 10,
+    egcs_fc_title_en: `${currency.toUpperCase()} smallest unit`, egcs_fc_title_fr: `${currency.toUpperCase()} plus petite unité`
+  })
+  const agreementBase = `/api/agreements/${native.created.id}`
+  const noHoldback = await page.request.patch(agreementBase, { data: { egcs_fc_holdback: 0 } })
+  expect(noHoldback.ok(), await noHoldback.text()).toBe(true)
+  const year = await post(page, `${agreementBase}/budget-fiscal-years`, { egcs_fc_fiscalyear: fiscal.id })
+  const budgetLine = await post(page, `${agreementBase}/budget-line-items`, {
+    egcs_fc_fundingagreementbudgetfiscalyear: year.id, egcs_fc_organizationcostcategory: category.id,
+    egcs_fc_costsubsection: `${currency.toUpperCase()} precision`, egcs_fc_description: 'Native smallest-unit Payment browser proof',
+    egcs_fc_totalamount: budget, egcs_fc_programfunding: budget, egcs_fc_fundingsources: [], egcs_fc_currency: currency
+  })
+  const types = await read<{ items: Row[] }>(page, `${agreementBase}/commitments/lookups/types?limit=100`)
+  const commitment = await post(page, `${agreementBase}/commitments`, {
+    egcs_fc_type: types.items[0]!.id, egcs_fc_currency: currency, egcs_fc_totalamount: budget
+  })
+  const commitmentLine = await post(page, `${agreementBase}/commitment-lines`, {
+    egcs_fc_commitment: commitment.id, egcs_fc_commitmentlinenumber: 1,
+    egcs_fc_transferpaymentstreamchartofaccount: linkedChart.id, egcs_fc_amount: budget
+  })
+  const approver = await browser.newPage()
+  await helpers.login(approver, 'user03@example.com', 'password123')
+  const complete = async (entityType: string, id: string) => {
+    await helpers.complete(page, entityType, id, 'Verified the native integer minor unit in browser.')
+    await helpers.approveAll(approver, entityType, id)
+  }
+  try {
+    await complete('fundingcaseagreementcommitment', commitment.id)
+    const forecast = await post(page, `${agreementBase}/forecasts`, { egcs_fc_fiscalyear: year.id })
+    await post(page, `${agreementBase}/forecast-line-items`, {
+      egcs_fc_agreementforecast: forecast.id, egcs_fc_fundingagreementbudgetlineitem: budgetLine.id,
+      egcs_fc_month: 0, egcs_fc_amount: smallest, egcs_fc_totalamount: smallest, egcs_fc_currency: currency
+    })
+    await complete('fundingcaseforecast', forecast.id)
+    const enable = await page.request.patch(`/api/extensions/streams/${owner.streamId}`, { data: {
+      extensionKey: 'gcs-automated-payments', enabled: true, config: { enabledPaymentTypes: ['advance', 'reimbursement'] }
+    } })
+    expect(enable.ok(), await enable.text()).toBe(true)
+    const selection = { egcs_fc_commitmenttype: commitment.egcs_fc_type, egcs_fc_fiscalyear: year.id,
+      egcs_fc_currency: currency, egcs_fc_paymenttype: 'advance', egcs_fc_periodstart: 0, egcs_fc_periodend: 0 }
+    const calculation = await post<Calculation>(page,
+      `/api/extensions/gcs-automated-payments/agreements/${native.created.id}/calculate-payment`, selection)
+    expect(calculation.suggestedAmount).toEqual(smallest)
+    expect(calculation.ceilingAmount).toEqual(smallest)
+    expect(calculation.holdbackAmount).toEqual({ amount: '0', currency: currency.toUpperCase() })
+    // Fractional minor units are not valid in the clean wire contract, even when JSON can encode them.
+    const malformed = await page.request.post(`${agreementBase}/payments`, { data: {
+      ...selection, egcs_fc_applicantrecipient: fixture.payee.id,
+      egcs_fc_paymentamount: { amount: '0.1', currency: currency.toUpperCase() }
+    } })
+    expect(malformed.status()).toBe(400)
+    await page.goto(`/en/agreements/${native.created.id}`)
+    await page.waitForURL(url => url.searchParams.get('section') === 'general')
+    await page.getByRole('tab', { name: 'Payments', exact: true }).click()
+    await page.getByRole('button', { name: 'Add Payment', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Add Payment', exact: true })
+    await selectPaymentAuditPayee(page, dialog, await resolvePaymentAuditPayee(page, native.created.id, fixture.payee.id))
+    const choose = async (label: RegExp, option: string | RegExp) => {
+      const control = dialog.getByRole('combobox', { name: label })
+      await control.click()
+      await page.getByRole('option', { name: option, exact: typeof option === 'string' }).first().click()
+      if (await control.getAttribute('aria-expanded') === 'true') await page.keyboard.press('Escape')
+      await expect(page.locator('[role="listbox"]')).toHaveCount(0)
+    }
+    await choose(/^Commitment type/, /Commitment/)
+    await choose(/^Fiscal year/, String(fiscal.egcs_ay_fiscalyeardisplay))
+    await choose(/^Payment type/, 'Advance')
+    await choose(/^Period start/, 'Apr')
+    await choose(/^Period end/, 'Apr')
+    const amountInput = dialog.getByRole('textbox', { name: /^Amount/ })
+    await expect.poll(async () => (await amountInput.inputValue()).replace(/[^\d.-]/g, '')).toBe(smallestMajor)
+    await amountInput.click()
+    await expect(amountInput).toHaveValue(smallestMajor)
+    await amountInput.fill(smallestMajor)
+    await amountInput.press('Tab')
+    await reviewPaymentAuditWizard(page, dialog, native.created.id)
+    const createdResponse = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === `${agreementBase}/payments`)
+    await dialog.getByRole('button', { name: 'Add', exact: true }).click()
+    const response = await createdResponse
+    expect(response.ok(), await response.text()).toBe(true)
+    expect(response.request().postDataJSON().egcs_fc_paymentamount).toEqual(smallest)
+    const payment = await response.json() as Row
+    expect(payment.egcs_fc_paymentamount).toEqual(smallest)
+    await post(page, `${agreementBase}/payment-lines`, { egcs_fc_fundingagreementpayment: payment.id,
+      egcs_fc_fundingagreementcommitmentline: commitmentLine.id, egcs_fc_amount: smallest })
+    await complete('fundingcasepayment', payment.id)
+    const retained = await read<Row>(page, `${agreementBase}/payments/${payment.id}`)
+    expect(retained.egcs_fc_paymentamount).toEqual(smallest)
+    await page.goto(`/en/agreements/${native.created.id}/payments/${payment.id}`)
+    await expect(page.getByRole('tab', { name: 'Payment completion', exact: true })).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath(`native-${currency}-one-minor-unit-payment.png`), fullPage: true })
+    await writeFile(testInfo.outputPath(`native-${currency}-one-minor-unit.json`), JSON.stringify({
+      currency, smallestMajor, smallest, calculation, submitted: response.request().postDataJSON(), retained
+    }, null, 2))
   } finally {
     await approver.close()
   }

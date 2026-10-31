@@ -1,14 +1,9 @@
 import type { GcsExtensionPaymentCalculationResult } from '@gcs-ssc/extensions/server'
+import { addMoney as add, subtractMoney as subtract, compareMoney as compare, minMoney, maxMoney, moneyFromMinorUnits, parseMoney, zeroMoney, parseDecimalText, percentageMoney, type Money } from '@gcs-ssc/extensions/money'
 import {
-  addAutomatedPaymentMoney as add, subtractAutomatedPaymentMoney as subtract,
-  compareAutomatedPaymentMoney as compare, parseAutomatedPaymentAggregateMoney as money,
-  parseAutomatedPaymentMoney, toCents, fromCents, ZERO_AUTOMATED_PAYMENT_MONEY as zero,
-  type AutomatedPaymentMoney, type AutomatedPaymentCalculationResult, type AutomatedPaymentCreditMemoBasis
+  type AutomatedPaymentCalculationResult, type AutomatedPaymentCreditMemoBasis
 } from '../shared/automated-payments.ts'
 import type { AutomatedPaymentServerInput } from './calculation-data.ts'
-
-const nonnegative = (value: AutomatedPaymentMoney) => compare(value, zero) < 0 ? zero : value
-const minimum = (...values: AutomatedPaymentMoney[]) => values.reduce((left, right) => compare(left, right) <= 0 ? left : right)
 
 /** Applies entitlement, whole-dollar holdback and Payment limits to exact host inputs. */
 export const calculateAutomatedPaymentValues = (
@@ -16,6 +11,15 @@ export const calculateAutomatedPaymentValues = (
   input: Pick<AutomatedPaymentServerInput, 'paymentType' | 'releaseHoldback' | 'holdbackReleaseAmount'>,
   creditMemoBasis: AutomatedPaymentCreditMemoBasis
 ): AutomatedPaymentCalculationResult => {
+  const currency = values.currency
+  const zero = zeroMoney(currency)
+  const minimum = (...amounts: Money[]) => minMoney(amounts, currency)
+  const nonnegative = (value: Money) => maxMoney([value, zero], currency)
+  const money = (value: unknown) => {
+    const amount = parseMoney(value)
+    if (amount.currency !== currency.toUpperCase()) throw new TypeError('Payment inputs must share their retained currency.')
+    return amount
+  }
   const claims = money(values.totalClaimsToLastClaimMonth)
   const payments = money(values.totalPaymentsToDate)
   const credits = money(values.totalCreditMemos)
@@ -29,19 +33,19 @@ export const calculateAutomatedPaymentValues = (
     : claims, netPayments)
   const baseAmount = nonnegative(entitlement)
   const basis = money(values.holdbackBasis === 'finalfiscal' ? values.finalFiscalYearTotal : values.agreementTotal)
-  const percentageHundredths = toCents(money(values.holdbackPercent))
-  if (toCents(basis) < BigInt(0) || percentageHundredths < BigInt(0) || percentageHundredths > BigInt(10000)) {
+  const holdbackPercent = parseDecimalText(values.holdbackPercent)
+  if (compare(basis, zero) < 0 || !/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(holdbackPercent) || Number(holdbackPercent) > 100) {
     throw new Error('Holdback requires a nonnegative basis and a percentage between zero and 100.')
   }
-  const holdbackAmount = fromCents(toCents(basis) * percentageHundredths / BigInt(1000000) * BigInt(100))
+  const holdbackAmount = percentageMoney(basis, holdbackPercent, { rounding: 'down', scale: 0 })
   const unpaidEligibleBalance = nonnegative(subtract(money(values.availableForDisbursementBeforeHoldback), subtract(credits, selectedCredits)))
   const reserve = minimum(holdbackAmount, unpaidEligibleBalance)
-  const requestedRelease = input.releaseHoldback ? nonnegative(parseAutomatedPaymentMoney(input.holdbackReleaseAmount ?? '0')) : zero
+  const requestedRelease = input.releaseHoldback ? nonnegative(money(input.holdbackReleaseAmount ?? zero)) : zero
   const holdbackReleaseAmount = minimum(requestedRelease, reserve)
   const availableBeforeHoldback = subtract(unpaidEligibleBalance, reserve)
   const commitmentRemaining = money(values.commitmentRemaining)
   const availableFunds = add(availableBeforeHoldback, holdbackReleaseAmount)
-  const singlePaymentLimit = money('99999999999999999.99')
+  const singlePaymentLimit = moneyFromMinorUnits('9'.repeat(38), currency)
   const ceilingAmount = nonnegative(minimum(baseAmount, commitmentRemaining,
     availableFunds, singlePaymentLimit))
   const details = { baseAmount, commitmentRemaining, availableBeforeHoldback, holdbackReleaseAmount,
@@ -81,10 +85,10 @@ export const calculateAutomatedPaymentValues = (
       { label: 'explanation.payment_calculation',
         rows: paymentRows, total: { label: 'explanation.payment_calculation', value: entitlement },
         ...(compare(entitlement, zero) < 0 ? { notes: ['explanation.nothing_payable'] } : {}) },
-      ...(percentageHundredths > BigInt(0)
+      ...(Number(holdbackPercent) > 0
         ? [{ label: 'explanation.holdback', rows: [
             { label: values.holdbackBasis === 'finalfiscal' ? 'explanation.final_year' : 'explanation.agreement_total', value: basis },
-            { label: 'explanation.holdback_rate', value: money(values.holdbackPercent), operator: '×' as const, format: 'percent' as const }
+            { label: 'explanation.holdback_rate', value: holdbackPercent, operator: '×' as const, format: 'percent' as const }
           ], total: { label: 'explanation.full_holdback', value: holdbackAmount },
           notes: [compare(reserve, holdbackAmount) < 0 ? 'explanation.reserve_limited' : 'explanation.rounded'],
           noteValues: { reserve } }]

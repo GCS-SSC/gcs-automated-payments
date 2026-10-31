@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Kysely, PostgresDialect, sql, type Generated } from 'kysely'
 import { Pool } from 'pg'
+import { moneyFromMinorUnits } from '@gcs-ssc/extensions/money'
 import { lockAutomatedPaymentAgreement, savePaymentMetadata } from '../../server/calculation-data'
 
 type Db = {
@@ -28,7 +29,7 @@ describe('Automated Payments host-transaction participation', () => {
     await admin.schema.dropSchema(schemaName).ifExists().cascade().execute()
     await admin.schema.createSchema(schemaName).execute()
     const schema = admin.schema.withSchema(schemaName)
-    await schema.createTable('Funding_Case_Agreement_Payment').addColumn('id', 'bigint', col => col.primaryKey()).addColumn('egcs_fc_paymentamount', 'numeric(19, 2)', col => col.notNull()).addColumn('_deleted', 'boolean', col => col.notNull().defaultTo(false)).execute()
+    await schema.createTable('Funding_Case_Agreement_Payment').addColumn('id', 'bigint', col => col.primaryKey()).addColumn('egcs_fc_paymentamount', 'numeric', col => col.notNull()).addColumn('_deleted', 'boolean', col => col.notNull().defaultTo(false)).execute()
     await schema.createTable('Common_Entity_Assignment').addColumn('id', 'bigserial', col => col.primaryKey()).addColumn('egcs_cn_entityid', 'bigint', col => col.notNull()).addColumn('_deleted', 'boolean', col => col.notNull().defaultTo(false)).execute()
     await sql`CREATE SCHEMA IF NOT EXISTS extensions`.execute(db)
     await sql`CREATE TABLE IF NOT EXISTS extensions.kv_entry (id bigserial PRIMARY KEY, extension_key text NOT NULL, owner_type text NOT NULL, owner_id bigint NOT NULL, config_key text NOT NULL, value jsonb NOT NULL, _deleted boolean NOT NULL DEFAULT false)`.execute(db)
@@ -42,9 +43,9 @@ describe('Automated Payments host-transaction participation', () => {
 
   const create = async (failure?: 'before' | 'after') => await db.transaction().execute(async trx => {
     if (failure === 'before') throw new Error('ceiling rejected')
-    await trx.insertInto('Funding_Case_Agreement_Payment').values({ id: '91', egcs_fc_paymentamount: '0.30', _deleted: false }).execute()
+    await trx.insertInto('Funding_Case_Agreement_Payment').values({ id: '91', egcs_fc_paymentamount: '30', _deleted: false }).execute()
     await trx.insertInto('Common_Entity_Assignment').values({ egcs_cn_entityid: '91', _deleted: false }).execute()
-    await savePaymentMetadata(trx as never, '91', { releaseHoldback: false, holdbackReleaseAmount: '0.00' })
+    await savePaymentMetadata(trx as never, '91', { releaseHoldback: false })
     if (failure === 'after') throw new Error('later hook failed')
   })
   const counts = async () => ({
@@ -62,16 +63,16 @@ describe('Automated Payments host-transaction participation', () => {
     expect(await counts()).toEqual({ payments: 0, assignments: 0, metadata: 0 })
   })
 
-  it.each(['0.10', '0.20', '99999999999999999.99'])(
-    'preserves canonical metadata money %s through commit and reload',
-    async amount => {
+  it.each([['10', 'CAD'], ['1', 'JPY'], ['1', 'KWD'], ['99999999999999999999999999999999999999', 'CLF']])(
+    'preserves canonical minor-unit metadata %s %s through commit and reload',
+    async (amount, currency) => {
       await db.transaction().execute(async trx => {
         await trx.insertInto('Funding_Case_Agreement_Payment').values({
-          id: '92', egcs_fc_paymentamount: amount, _deleted: false
+          id: '92', egcs_fc_paymentamount: amount!, _deleted: false
         }).execute()
         await savePaymentMetadata(trx as never, '92', {
           releaseHoldback: true,
-          holdbackReleaseAmount: amount
+          holdbackReleaseAmount: moneyFromMinorUnits(amount!, currency!)
         })
       })
 
@@ -83,18 +84,17 @@ describe('Automated Payments host-transaction participation', () => {
       const metadata = await db.selectFrom('extensions.kv_entry')
         .select('value').where('owner_id', '=', '92').executeTakeFirstOrThrow()
       expect(payment.rows[0]?.amount).toBe(amount)
-      expect(metadata.value).toEqual({ releaseHoldback: true, holdbackReleaseAmount: amount })
+      expect(metadata.value).toEqual({ releaseHoldback: true, holdbackReleaseAmount: moneyFromMinorUnits(amount!, currency!) })
     }
   )
 
   it('rolls back exact Payment and metadata together after the final write fails', async () => {
     await expect(db.transaction().execute(async trx => {
       await trx.insertInto('Funding_Case_Agreement_Payment').values({
-        id: '93', egcs_fc_paymentamount: '0.10', _deleted: false
+        id: '93', egcs_fc_paymentamount: '10', _deleted: false
       }).execute()
       await savePaymentMetadata(trx as never, '93', {
-        releaseHoldback: false,
-        holdbackReleaseAmount: '0.00'
+        releaseHoldback: false
       })
       throw new Error('forced final-row failure')
     })).rejects.toThrow('forced final-row failure')

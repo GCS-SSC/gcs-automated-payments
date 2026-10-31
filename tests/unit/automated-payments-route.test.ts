@@ -1,3 +1,4 @@
+import { money } from '../fixtures/money'
 import { IncomingMessage, ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -10,12 +11,13 @@ const financials = { getCostAllocationContext: vi.fn(), getPaymentCalculation: v
 const validCommitmentTypeId = '9223372036854775807'
 const validFiscalYearId = '1'
 const validBody = {
+  egcs_fc_currency: 'cad',
   egcs_fc_commitmenttype: validCommitmentTypeId,
   egcs_fc_fiscalyear: validFiscalYearId,
   egcs_fc_paymenttype: 'advance',
   egcs_fc_periodstart: 1,
   egcs_fc_periodend: 3,
-  egcs_fc_paymentamount: '90.50'
+  egcs_fc_paymentamount: money('90.50', 'CAD')
 }
 
 vi.mock('../../server/calculation-data', () => ({
@@ -55,6 +57,7 @@ describe('gcs automated payments calculation route', () => {
 
   it('converts invalid route input into extension-owned validation details', async () => {
     const body = {
+      egcs_fc_currency: 'cad',
       egcs_fc_commitmenttype: '',
       egcs_fc_fiscalyear: validFiscalYearId,
       egcs_fc_paymenttype: 'advance',
@@ -111,12 +114,12 @@ describe('gcs automated payments calculation route', () => {
   it('passes validated payment fields, extension payload, and stream config to the calculator', async () => {
     const result = {
       enabled: true,
-      baseAmount: '100.00',
-      ceilingAmount: '90.00',
-      suggestedAmount: '90.00',
-      holdbackAmount: '10.00',
-      holdbackReleaseAmount: '5.00',
-      availableBeforeHoldback: '85.00',
+      baseAmount: money('100.00', 'CAD'),
+      ceilingAmount: money('90.00', 'CAD'),
+      suggestedAmount: money('90.00', 'CAD'),
+      holdbackAmount: money('10.00', 'CAD'),
+      holdbackReleaseAmount: money('5.00', 'CAD'),
+      availableBeforeHoldback: money('85.00', 'CAD'),
       currency: 'CAD',
       details: []
     }
@@ -127,7 +130,7 @@ describe('gcs automated payments calculation route', () => {
       extensions: {
         'gcs-automated-payments': {
           releaseHoldback: true,
-          holdbackReleaseAmount: '5.25'
+          holdbackReleaseAmount: money('5.25', 'CAD')
         }
       }
     }
@@ -147,18 +150,18 @@ describe('gcs automated payments calculation route', () => {
       paymentType: 'advance',
       periodStart: 1,
       periodEnd: 3,
-      submittedAmount: '90.50',
+      submittedAmount: money('90.50', 'CAD'),
       releaseHoldback: true,
-      holdbackReleaseAmount: '5.25'
+      holdbackReleaseAmount: money('5.25', 'CAD')
     }, streamConfig, financials, agencyConfig)
   })
 
   it('passes explicit USD through the public route and retains the calculator currency', async () => {
-    const body = { ...validBody, egcs_fc_currency: 'usd' }
-    calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({ currency: 'USD', ceilingAmount: '90.00' })
+    const body = { ...validBody, egcs_fc_currency: 'usd', egcs_fc_paymentamount: money('90.50', 'USD') }
+    calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({ currency: 'USD', ceilingAmount: money('90.00', 'USD') })
     const handler = (await import('../../server/api/calculate-payment.post')).default
     await expect(handler(createRouteEvent({ params: { agreementId: '1' }, $db: {}, gcsExtension: { agencyConfig, config: {}, agreementFinancials: financials } }, body)))
-      .resolves.toMatchObject({ currency: 'USD', ceilingAmount: '90.00' })
+      .resolves.toMatchObject({ currency: 'USD', ceilingAmount: money('90.00', 'USD') })
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ currency: 'usd' }), expect.anything(), financials, agencyConfig)
   })
 

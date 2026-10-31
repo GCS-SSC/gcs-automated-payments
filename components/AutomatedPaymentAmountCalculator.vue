@@ -3,6 +3,7 @@ import { formatCalculationExplanation, formatCalculationMoney } from '../shared/
 import { messages } from '../i18n/messages'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { Ref } from 'vue'
+import { zeroMoney, type MoneyInput } from '@gcs-ssc/extensions/money'
 import { FetchResponseError, type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
 import type { GcsPaymentAmountCalculatorResult } from '@gcs-ssc/extensions/ui'
 import {
@@ -17,10 +18,8 @@ import {
 import {
   EXTENSION_KEY,
   AutomatedPaymentCurrencySchema,
-  ZERO_AUTOMATED_PAYMENT_MONEY,
   type AutomatedPaymentCalculationResult,
-  type AutomatedPaymentMoney,
-  tryParseAutomatedPaymentMoney
+  type AutomatedPaymentMoney
 } from '../shared/automated-payments'
 
 const {
@@ -49,7 +48,7 @@ const localErrorKey: Ref<'calculation_error' | 'currency_mismatch' | null> = ref
 const displayedError = computed(() => localErrorKey.value ? t(localErrorKey.value) : errorMessage.value)
 const isLoading: Ref<boolean> = ref(false)
 const releaseHoldback: Ref<boolean> = ref(false)
-const holdbackReleaseAmount: Ref<string> = ref('')
+const holdbackReleaseAmount: Ref<MoneyInput> = ref(undefined)
 
 const api = useExtensionApi(extensionKey)
 const endpoint = computed(() => `/agreements/${context.agreementId}/calculate-payment`)
@@ -128,16 +127,13 @@ const readErrorMessage = async (response: Response): Promise<string | null> => {
  * @param value Canonical money.
  * @returns The localized amount and currency.
  */
-const formatMoney = (value: AutomatedPaymentMoney) => formatCalculationMoney(value,
-  calculation.value?.currency ?? selectedCurrency.value?.toUpperCase() ?? '', locale.value)
+const formatMoney = (value: AutomatedPaymentMoney) => formatCalculationMoney(value, locale.value)
 
 const calculationExplanation = computed(() => formatCalculationExplanation(calculation.value?.explanation, locale.value, t, formatMoney))
 
 const serializedHoldbackReleaseAmount = computed(() => {
-  if (!releaseHoldback.value || holdbackReleaseAmount.value === '') {
-    return ZERO_AUTOMATED_PAYMENT_MONEY
-  }
-  return tryParseAutomatedPaymentMoney(holdbackReleaseAmount.value) ?? holdbackReleaseAmount.value
+  if (!selectedCurrency.value) return undefined
+  return releaseHoldback.value ? holdbackReleaseAmount.value : zeroMoney(selectedCurrency.value)
 })
 
 const requestBody = computed(() => ({
@@ -158,7 +154,7 @@ const requestBody = computed(() => ({
 // Holdback elections belong to this Agreement, never to the next route owner.
 watch(() => context.agreementId, () => {
   releaseHoldback.value = false
-  holdbackReleaseAmount.value = ''
+  holdbackReleaseAmount.value = undefined
 }, { flush: 'sync' })
 
 const hasRequiredInputs = computed(() =>
@@ -277,10 +273,12 @@ watch([() => JSON.stringify(requestBody.value), endpoint], calculate, { immediat
 
       <ExtensionFormField
         v-if="releaseHoldback"
-        :label="t('holdback_release_amount')" data-ui-target="extension.gcs-automated-payments.automated-payment-amount-calculator.holdback_release_amount">
+        :label="t('holdback_release_amount')" required data-ui-target="extension.gcs-automated-payments.automated-payment-amount-calculator.holdback_release_amount">
         <ExtensionCurrencyInput
           v-model="holdbackReleaseAmount"
-          :currency="selectedCurrency" />
+          :currency="selectedCurrency"
+          required
+          aria-required="true" />
       </ExtensionFormField>
     </div>
 

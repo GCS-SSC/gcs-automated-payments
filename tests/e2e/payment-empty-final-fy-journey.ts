@@ -1,3 +1,4 @@
+import { parseCurrencyMoney, parseMoney, majorMoneyText, type Money } from '@gcs-ssc/extensions/money'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, type Browser, type Page, type TestInfo } from '@playwright/test'
@@ -20,7 +21,11 @@ const post = async <T = Row>(page: Page, path: string, data: Record<string, unkn
   expect(response.ok(), `${path}: ${response.status()} ${await response.text()}`).toBe(true)
   return await response.json() as T
 }
-const csvCell = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`
+const csvCell = (value: unknown) => {
+  const text = value && typeof value === 'object' && 'amount' in value && 'currency' in value
+    ? majorMoneyText(parseMoney(value)) : String(value ?? '')
+  return `"${text.replaceAll('"', '""')}"`
+}
 
 /** A later live Agreement FY with no funding lines is the final-FY basis, even when earlier funding remains. */
 export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser: Browser, testInfo: TestInfo, source: Owner, helpers: Helpers) => {
@@ -32,10 +37,10 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
     egcs_ay_startdate: `${fiscalNumber}-04-01`, egcs_ay_enddate: `${fiscalNumber + 1}-03-31`, egcs_ay_jvopen: false
   })
   const finalProgramBudget = await post(page, `/api/transfer-payments/${owner.programId}/budgets`, {
-    egcs_tp_fiscalyear: finalAgencyFiscalYear.id, egcs_tp_currency: 'cad', egcs_tp_totalbudget: '0.00', egcs_tp_overcommitthreshold: 0
+    egcs_tp_fiscalyear: finalAgencyFiscalYear.id, egcs_tp_currency: 'cad', egcs_tp_totalbudget: parseCurrencyMoney('0.00', 'cad'), egcs_tp_overcommitthreshold: 0
   })
   const finalStreamBudget = await post(page, `${streamBase}/budgets`, {
-    egcs_tp_transferpaymentbudget: finalProgramBudget.id, egcs_tp_totalbudget: '0.00', egcs_tp_overcommitthreshold: 0
+    egcs_tp_transferpaymentbudget: finalProgramBudget.id, egcs_tp_totalbudget: parseCurrencyMoney('0.00', 'cad'), egcs_tp_overcommitthreshold: 0
   })
   const update = await page.request.patch(agreementBase, { data: {
     egcs_fc_holdbackbasis: authoredFinalBasis.id,
@@ -48,10 +53,10 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
   expect(beforeBudget.lineItems).toHaveLength(1)
   expect(beforeBudget.lineItems[0]!.egcs_fc_fundingagreementbudgetfiscalyear).toBe(fiscalYear.id)
   const types = await read<{ items: Row[] }>(page, `${agreementBase}/commitments/lookups/types?limit=100`)
-  const commitment = await post(page, `${agreementBase}/commitments`, { egcs_fc_type: types.items[0]!.id, egcs_fc_currency: 'cad', egcs_fc_totalamount: '1000.05' })
+  const commitment = await post(page, `${agreementBase}/commitments`, { egcs_fc_type: types.items[0]!.id, egcs_fc_currency: 'cad', egcs_fc_totalamount: parseCurrencyMoney('1000.05', 'cad') })
   const line = await post(page, `${agreementBase}/commitment-lines`, {
     egcs_fc_commitment: commitment.id, egcs_fc_commitmentlinenumber: 1,
-    egcs_fc_transferpaymentstreamchartofaccount: linkedChart.id, egcs_fc_amount: '1000.05'
+    egcs_fc_transferpaymentstreamchartofaccount: linkedChart.id, egcs_fc_amount: parseCurrencyMoney('1000.05', 'cad')
   })
   const approver = await browser.newPage()
   await helpers.login(approver, 'user03@example.com', 'password123')
@@ -64,28 +69,28 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
     const forecast = await post(page, `${agreementBase}/forecasts`, { egcs_fc_fiscalyear: fiscalYear.id })
     const forecastLine = await post(page, `${agreementBase}/forecast-line-items`, {
       egcs_fc_agreementforecast: forecast.id, egcs_fc_fundingagreementbudgetlineitem: budgetLine.id,
-      egcs_fc_month: 0, egcs_fc_amount: '1000.05', egcs_fc_totalamount: '1000.05', egcs_fc_currency: 'cad'
+      egcs_fc_month: 0, egcs_fc_amount: parseCurrencyMoney('1000.05', 'cad'), egcs_fc_totalamount: parseCurrencyMoney('1000.05', 'cad'), egcs_fc_currency: 'cad'
     })
     await complete('fundingcaseforecast', forecast.id)
     const enabled = await page.request.patch(`/api/extensions/streams/${owner.streamId}`, { data: {
       extensionKey: 'gcs-automated-payments', enabled: true, config: { enabledPaymentTypes: ['advance', 'reimbursement'] }
     } })
     expect(enabled.ok(), await enabled.text()).toBe(true)
-    const calculation = await post<Row & { details: Array<{ label: string; value: string }> }>(page,
+    const calculation = await post<Row & { details: Array<{ label: string; value: Money }> }>(page,
       `/api/extensions/gcs-automated-payments/agreements/${owner.agreementId}/calculate-payment`, {
         egcs_fc_commitmenttype: commitment.egcs_fc_type, egcs_fc_fiscalyear: fiscalYear.id, egcs_fc_currency: 'cad',
         egcs_fc_paymenttype: 'advance', egcs_fc_periodstart: 0, egcs_fc_periodend: 0
       })
     const details = Object.fromEntries(calculation.details.map(item => [item.label, item.value]))
     // Literal independent oracle: floor(10% * 0 final-year funding)=0; all1000.05 remains payable.
-    expect(calculation.holdbackAmount).toBe('0.00')
-    expect(calculation.holdbackReleaseAmount).toBe('0.00')
-    expect(calculation.baseAmount).toBe('1000.05')
-    expect(calculation.availableBeforeHoldback).toBe('1000.05')
-    expect(calculation.suggestedAmount).toBe('1000.05')
-    expect(calculation.ceilingAmount).toBe('1000.05')
-    expect(details.totalPaymentsToDate).toBe('0.00')
-    expect(details.commitmentRemaining).toBe('1000.05')
+    expect(calculation.holdbackAmount).toEqual(parseCurrencyMoney('0.00', 'cad'))
+    expect(calculation.holdbackReleaseAmount).toEqual(parseCurrencyMoney('0.00', 'cad'))
+    expect(calculation.baseAmount).toEqual(parseCurrencyMoney('1000.05', 'cad'))
+    expect(calculation.availableBeforeHoldback).toEqual(parseCurrencyMoney('1000.05', 'cad'))
+    expect(calculation.suggestedAmount).toEqual(parseCurrencyMoney('1000.05', 'cad'))
+    expect(calculation.ceilingAmount).toEqual(parseCurrencyMoney('1000.05', 'cad'))
+    expect(details.totalPaymentsToDate).toEqual(parseCurrencyMoney('0.00', 'cad'))
+    expect(details.commitmentRemaining).toEqual(parseCurrencyMoney('1000.05', 'cad'))
     await page.goto(`/en/agreements/${owner.agreementId}`)
     await page.waitForURL(url => url.searchParams.get('section') === 'general')
     await page.getByRole('tab', { name: 'Payments', exact: true }).click()
@@ -113,15 +118,15 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
     await dialog.getByRole('button', { name: 'Add', exact: true }).click()
     const payment = await (await paymentResponse).json() as Row
     expect(payment.egcs_fc_currency).toBe('cad')
-    expect(payment.egcs_fc_paymentamount).toBe('1000.05')
+    expect(payment.egcs_fc_paymentamount).toEqual(parseCurrencyMoney('1000.05', 'cad'))
     expect(payment.egcs_fc_applicantrecipient).toBe(fixture.payee.id)
     await post(page, `${agreementBase}/payment-lines`, { egcs_fc_fundingagreementpayment: payment.id,
-      egcs_fc_fundingagreementcommitmentline: line.id, egcs_fc_amount: '1000.05' })
+      egcs_fc_fundingagreementcommitmentline: line.id, egcs_fc_amount: parseCurrencyMoney('1000.05', 'cad') })
     await complete('fundingcasepayment', payment.id)
     const persistedPayment = await read<Row & { lines: Row[] }>(page, `${agreementBase}/payments/${payment.id}`)
     expect(persistedPayment.isCompleted).toBe(true)
-    expect(persistedPayment.egcs_fc_paymentamount).toBe('1000.05')
-    expect(persistedPayment.lines.map(item => item.egcs_fc_amount)).toEqual(['1000.05'])
+    expect(persistedPayment.egcs_fc_paymentamount).toEqual(parseCurrencyMoney('1000.05', 'cad'))
+    expect(persistedPayment.lines.map(item => item.egcs_fc_amount)).toEqual([parseCurrencyMoney('1000.05', 'cad')])
     const row = {
       scenario_id: 'empty-final-FY-zero-funded-H0-full-advance', agreement_id: owner.agreementId, currency: 'cad',
       current_agency_fiscal_year_id: fiscal.id, current_agreement_fiscal_year_id: fiscalYear.id, current_fiscal_year: fiscal.egcs_ay_fiscalyeardisplay,

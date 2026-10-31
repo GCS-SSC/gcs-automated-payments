@@ -1,3 +1,4 @@
+import { compareMoney, parseMoney, zeroMoney } from '@gcs-ssc/extensions/money'
 import {
   defineGcsExtensionNitroPlugin,
   requireGcsExtensionAgreementFinancials,
@@ -9,12 +10,10 @@ import {
 import { sql, type Transaction } from 'kysely'
 import {
   AutomatedPaymentCalculateSchema,
+  AutomatedPaymentIdentitySchema,
   AutomatedPaymentCurrencySchema,
   AutomatedPaymentsAgencyConfigSchema,
   EXTENSION_KEY,
-  ZERO_AUTOMATED_PAYMENT_MONEY,
-  compareAutomatedPaymentMoney,
-  parseAutomatedPaymentMoney,
   parseAutomatedPaymentExtensionPayload,
 } from '../../shared/automated-payments.ts'
 import {
@@ -24,7 +23,7 @@ import {
   lockAutomatedPaymentAgreement,
   savePaymentMetadata
 } from '../calculation-data.ts'
-import { createAutomatedPaymentUserError } from '../errors.ts'
+import { createAutomatedPaymentUserError, createAutomatedPaymentValidationError } from '../errors.ts'
 import { guardAutomatedPaymentsActivation } from '../activation.ts'
 import { databaseNumericText, parseDatabaseMoney } from '../numeric.ts'
 
@@ -76,6 +75,9 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
   registerGcsExtensionCreateOperationHandler(EXTENSION_KEY, 'agreement.payments.create', async context => {
     const parsed = AutomatedPaymentCalculateSchema.safeParse(context.validatedBody)
     if (!parsed.success) {
+      if (AutomatedPaymentIdentitySchema.safeParse(context.validatedBody).success) {
+        throw createAutomatedPaymentValidationError(parsed.error.issues)
+      }
       return { status: 'continue' }
     }
 
@@ -155,8 +157,8 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
       return { status: 'continue' }
     }
 
-    const submittedAmount = parsed.data.egcs_fc_paymentamount ?? ZERO_AUTOMATED_PAYMENT_MONEY
-    if (compareAutomatedPaymentMoney(submittedAmount, calculation.ceilingAmount) > 0) {
+    const submittedAmount = parsed.data.egcs_fc_paymentamount ?? zeroMoney(calculation.currency)
+    if (compareMoney(submittedAmount, calculation.ceilingAmount) > 0) {
       throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING', 'egcs_fc_paymentamount')
     }
 
@@ -199,6 +201,9 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
     if (!payment) return
 
     const changes = context.changes ?? {}
+    if (changes.egcs_fc_currency !== undefined && changes.egcs_fc_currency !== payment.egcs_fc_currency) {
+      throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', 'egcs_fc_currency')
+    }
     const nextCommitmentId = String(
       changes.egcs_fc_fundingagreementcommitment
       ?? payment.egcs_fc_fundingagreementcommitment
@@ -238,17 +243,17 @@ export default defineGcsExtensionNitroPlugin(nitroApp => {
       periodStart: Number(changes.egcs_fc_periodstart ?? payment.egcs_fc_periodstart),
       periodEnd: Number(changes.egcs_fc_periodend ?? payment.egcs_fc_periodend),
       submittedAmount: changes.egcs_fc_paymentamount === undefined
-        ? parseDatabaseMoney(payment.egcs_fc_paymentamount)
-        : parseAutomatedPaymentMoney(changes.egcs_fc_paymentamount as string | number),
+        ? parseDatabaseMoney(payment.egcs_fc_paymentamount, AutomatedPaymentCurrencySchema.parse(changes.egcs_fc_currency ?? payment.egcs_fc_currency))
+        : parseMoney(changes.egcs_fc_paymentamount),
       releaseHoldback: metadata.releaseHoldback,
       holdbackReleaseAmount: metadata.holdbackReleaseAmount,
       excludePaymentId: context.paymentId
     }
     const calculation = await calculateAutomatedPaymentFromDb(db, nextInput, streamConfig.config, requireGcsExtensionAgreementFinancials(context), context.agencyConfig)
     const nextAmount = changes.egcs_fc_paymentamount === undefined
-      ? parseDatabaseMoney(payment.egcs_fc_paymentamount)
-      : parseAutomatedPaymentMoney(changes.egcs_fc_paymentamount as string | number)
-    if (calculation.enabled && compareAutomatedPaymentMoney(nextAmount, calculation.ceilingAmount) > 0) {
+      ? parseDatabaseMoney(payment.egcs_fc_paymentamount, AutomatedPaymentCurrencySchema.parse(changes.egcs_fc_currency ?? payment.egcs_fc_currency))
+      : parseMoney(changes.egcs_fc_paymentamount)
+    if (calculation.enabled && compareMoney(nextAmount, calculation.ceilingAmount) > 0) {
       throw createAutomatedPaymentUserError('GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING', 'egcs_fc_paymentamount')
     }
     if (!refreshEvidence) return

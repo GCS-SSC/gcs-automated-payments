@@ -1,3 +1,4 @@
+import { formatMoneyText, parseDecimalText, type Money } from '@gcs-ssc/extensions/money'
 import type { AutomatedPaymentCalculationResult, AutomatedPaymentMoney } from './automated-payments'
 import type { messages } from '../i18n/messages'
 
@@ -18,13 +19,12 @@ export const formatCalculationExplanation = (
   return explanation?.map(step => ({
     label: t(step.label as keyof typeof messages.en),
     rows: step.rows.map(row => {
-      const percentage = row.value.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
       const value = row.format === 'percent'
-        ? `${locale === 'fr' ? percentage.replace('.', ',') : percentage}%`
+        ? `${locale === 'fr' ? parseDecimalText(row.value).replace('.', ',') : parseDecimalText(row.value)}%`
         : formatMoney(row.value)
       return {
         label: t(row.label as keyof typeof messages.en),
-        value: row.operator && row.value.startsWith('-') ? `(${value})` : value,
+        value: row.operator && (row.format === 'percent' ? row.value : row.value.amount).startsWith('-') ? `(${value})` : value,
         ...(row.operator ? { operator: row.operator } : {})
       }
     }),
@@ -44,12 +44,4 @@ export const formatCalculationExplanation = (
  * @param locale Current interface locale.
  * @returns Localized currency text without numeric conversion.
  */
-export const formatCalculationMoney = (value: string, currency: string, locale: string): string => {
-  const [integer = '0', fraction = '00'] = value.split('.')
-  const negative = integer.startsWith('-')
-  const digits = negative ? integer.slice(1) : integer
-  const isFrench = locale === 'fr'
-  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, isFrench ? '\u00a0' : ',')
-  const amount = `${grouped}${isFrench ? ',' : '.'}${fraction}`
-  return isFrench ? `${negative ? '-' : ''}${amount}\u00a0$ ${currency}` : `${currency} ${negative ? '-' : ''}$${amount}`
-}
+export const formatCalculationMoney = (value: Money, locale: string): string => formatMoneyText(value, locale)

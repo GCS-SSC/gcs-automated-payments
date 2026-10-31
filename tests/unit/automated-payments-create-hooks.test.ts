@@ -1,3 +1,4 @@
+import { money } from '../fixtures/money'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAutomatedPaymentUserError } from '../../server/errors'
 
@@ -39,16 +40,17 @@ vi.mock('../../server/activation', () => ({
 }))
 
 const validBody = {
+  egcs_fc_currency: 'cad',
   egcs_fc_commitmenttype: validCommitmentTypeId,
   egcs_fc_fiscalyear: validFiscalYearId,
   egcs_fc_paymenttype: 'advance',
   egcs_fc_periodstart: 1,
   egcs_fc_periodend: 3,
-  egcs_fc_paymentamount: '100.00',
+  egcs_fc_paymentamount: money('100.00', 'CAD'),
   extensions: {
     'gcs-automated-payments': {
       releaseHoldback: true,
-      holdbackReleaseAmount: '10.00'
+      holdbackReleaseAmount: money('10.00', 'CAD')
     }
   }
 }
@@ -66,11 +68,12 @@ describe('gcs automated payments create hooks', () => {
     vi.stubGlobal('defineNitroPlugin', (plugin: unknown) => plugin)
     calculateAutomatedPaymentFromDbMock.mockResolvedValue({
       enabled: true,
-      ceilingAmount: '100.00',
-      holdbackReleaseAmount: '8.00',
-      explanation: [{ label: 'explanation.maximum', rows: [{ label: 'explanation.commitment', value: '100.00' }], total: { label: 'explanation.maximum', value: '100.00' }, notes: ['explanation.limited_commitment'], emphasis: true }]
+      currency: 'CAD',
+      ceilingAmount: money('100.00', 'CAD'),
+      holdbackReleaseAmount: money('8.00', 'CAD'),
+      explanation: [{ label: 'explanation.maximum', rows: [{ label: 'explanation.commitment', value: money('100.00', 'CAD') }], total: { label: 'explanation.maximum', value: money('100.00', 'CAD') }, notes: ['explanation.limited_commitment'], emphasis: true }]
     })
-    getPaymentMetadataMock.mockResolvedValue({ releaseHoldback: true, holdbackReleaseAmount: '12.00' })
+    getPaymentMetadataMock.mockResolvedValue({ releaseHoldback: true, holdbackReleaseAmount: money('12.00', 'CAD') })
   })
 
   it('registers the extension activation guard hook', async () => {
@@ -171,8 +174,9 @@ describe('gcs automated payments create hooks', () => {
   it('validates before-create payment amounts against the calculated ceiling', async () => {
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({
       enabled: true,
-      ceilingAmount: '50.00',
-      holdbackReleaseAmount: '0.00'
+      currency: 'CAD',
+      ceilingAmount: money('50.00', 'CAD'),
+      holdbackReleaseAmount: money('0.00', 'CAD')
     })
     const handler = await loadHandler()
 
@@ -192,29 +196,52 @@ describe('gcs automated payments create hooks', () => {
       fiscalYearId: validFiscalYearId,
       periodStart: 1,
       periodEnd: 3,
-      submittedAmount: '100.00',
+      submittedAmount: money('100.00', 'CAD'),
       releaseHoldback: true,
-      holdbackReleaseAmount: '10.00'
+      holdbackReleaseAmount: money('10.00', 'CAD')
     }), { enabledPaymentTypes: ['advance'] }, financials, agencyConfig)
   })
 
   it.each(['0.01', '75.01', '100.00'])('allows the exact selected gross amount %s up to the ceiling without substituting the suggestion', async amount => {
     const handler = await loadHandler()
-    const body = { ...validBody, egcs_fc_paymentamount: amount }
+    const body = { ...validBody, egcs_fc_paymentamount: money(amount) }
     await expect(handler({
       phase: 'before-create', agencyConfig, validatedBody: body, trx: {}, agreementId: 'agreement-1',
       config: { enabledPaymentTypes: ['advance'] }
     })).resolves.toEqual({ status: 'continue' })
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(),
-      expect.objectContaining({ submittedAmount: amount }), { enabledPaymentTypes: ['advance'] }, financials, agencyConfig)
-    expect(body.egcs_fc_paymentamount).toBe(amount)
+      expect.objectContaining({ submittedAmount: money(amount) }), { enabledPaymentTypes: ['advance'] }, financials, agencyConfig)
+    expect(body.egcs_fc_paymentamount).toEqual(money(amount))
     expect(savePaymentMetadataMock).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { name: 'fractional JPY minor units', changes: { egcs_fc_currency: 'jpy', egcs_fc_paymentamount: { amount: '0.1', currency: 'JPY' }, extensions: {} } },
+    { name: 'another amount currency', changes: { egcs_fc_paymentamount: money('100', 'USD') } },
+    { name: 'legacy holdback text', changes: { extensions: { 'gcs-automated-payments': { releaseHoldback: true, holdbackReleaseAmount: '10.00' } } } },
+    { name: 'another holdback currency', changes: { extensions: { 'gcs-automated-payments': { releaseHoldback: true, holdbackReleaseAmount: money('10', 'KWD') } } } }
+  ])('rejects $name rather than bypassing the enabled calculator', async ({ changes }) => {
+    const handler = await loadHandler()
+    await expect(handler({ phase: 'before-create', agencyConfig, validatedBody: { ...validBody, ...changes },
+      trx: {}, agreementId: '1', config: {} })).rejects.toMatchObject({
+      code: 'GCS_AUTOMATED_PAYMENTS_INVALID_CALCULATION_INPUT', localizedMessage: { en: expect.any(String), fr: expect.any(String) }
+    })
+    expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
+    expect(savePaymentMetadataMock).not.toHaveBeenCalled()
+  })
+  it('enforces the enabled ceiling when a direct caller omits all extension metadata', async () => {
+    calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({ enabled: true, currency: 'CAD', ceilingAmount: money('50'), holdbackReleaseAmount: money('0') })
+    const handler = await loadHandler()
+    const { extensions: _extensions, ...body } = validBody
+    await expect(handler({ phase: 'before-create', agencyConfig, validatedBody: body,
+      trx: {}, agreementId: '1', config: {} })).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING' })
+    expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledOnce()
   })
 
   it('rejects a one-cent overrun at the server create boundary', async () => {
     const handler = await loadHandler()
     await expect(handler({
-      phase: 'before-create', agencyConfig, validatedBody: { ...validBody, egcs_fc_paymentamount: '100.01' },
+      phase: 'before-create', agencyConfig, validatedBody: { ...validBody, egcs_fc_paymentamount: money('100.01', 'CAD') },
       trx: {}, agreementId: 'agreement-1', config: {}
     })).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING',
       details: [expect.objectContaining({ path: 'egcs_fc_paymentamount' })] })
@@ -243,7 +270,7 @@ describe('gcs automated payments create hooks', () => {
       agencyConfig, validatedBody: validBody,
       trx,
       agreementId: 'agreement-1',
-      createdRecord: { id: 'payment-1' },
+      createdRecord: { egcs_fc_currency: 'cad',  id: 'payment-1' },
       config: {}
     })).resolves.toEqual({ status: 'continue' })
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(trx, expect.objectContaining({
@@ -253,8 +280,8 @@ describe('gcs automated payments create hooks', () => {
     }), {}, financials, agencyConfig)
     expect(savePaymentMetadataMock).toHaveBeenCalledWith(trx, 'payment-1', {
       releaseHoldback: true,
-      holdbackReleaseAmount: '8.00',
-      calculationEvidence: expect.objectContaining({ version: 2, capturedAt: expect.any(String), input: expect.objectContaining({ periodStart: 1, periodEnd: 3, creditMemoBasis: 'reconciled-periods' }), calculation: expect.objectContaining({ holdbackReleaseAmount: '8.00', explanation: [expect.objectContaining({ total: { label: 'explanation.maximum', value: '100.00' }, notes: ['explanation.limited_commitment'] })] }) })
+      holdbackReleaseAmount: money('8.00', 'CAD'),
+      calculationEvidence: expect.objectContaining({ version: 3, capturedAt: expect.any(String), input: expect.objectContaining({ periodStart: 1, periodEnd: 3, creditMemoBasis: 'reconciled-periods' }), calculation: expect.objectContaining({ holdbackReleaseAmount: money('8.00', 'CAD'), explanation: [expect.objectContaining({ total: { label: 'explanation.maximum', value: money('100.00', 'CAD') }, notes: ['explanation.limited_commitment'] })] }) })
     })
   })
 
@@ -268,19 +295,19 @@ describe('gcs automated payments create hooks', () => {
       agencyConfig, validatedBody: validBody,
       trx: {},
       agreementId: 'agreement-1',
-      createdRecord: { id: 'payment-1' },
+      createdRecord: { egcs_fc_currency: 'cad',  id: 'payment-1' },
       config: {}
     })).rejects.toBe(failure)
     expect(savePaymentMetadataMock).not.toHaveBeenCalled()
   })
 
   it('does not retain an unauthored zero calculation when this payment type is disabled', async () => {
-    calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({ enabled: false, holdbackReleaseAmount: '0.00' })
+    calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({ enabled: false, holdbackReleaseAmount: money('0.00', 'CAD') })
     const handler = await loadHandler()
     await handler({ phase: 'after-create', agencyConfig, validatedBody: validBody, trx: {}, agreementId: '1',
-      createdRecord: { id: '1' }, config: {} })
+      createdRecord: { egcs_fc_currency: 'cad',  id: '1' }, config: {} })
     expect(savePaymentMetadataMock).toHaveBeenCalledWith(expect.anything(), '1', {
-      releaseHoldback: true, holdbackReleaseAmount: '0.00'
+      releaseHoldback: true, holdbackReleaseAmount: money('0.00', 'CAD')
     })
   })
 
@@ -289,12 +316,12 @@ describe('gcs automated payments create hooks', () => {
     const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as
       (context: Record<string, unknown>) => Promise<void>
     const responses = [
-      {
+      { egcs_fc_currency: 'cad',
         egcs_fc_fiscalyear: 'fy-1',
         egcs_fc_paymenttype: 'advance',
         egcs_fc_periodstart: 1,
         egcs_fc_periodend: 3,
-        egcs_fc_paymentamount: '40.00',
+        egcs_fc_paymentamount: money('40.00', 'CAD').amount,
         egcs_fc_fundingagreementcommitment: 'commitment-1'
       },
       { commitment_type: 'type-2', stream_id: 'stream-2' },
@@ -308,8 +335,9 @@ describe('gcs automated payments create hooks', () => {
     const db = { selectFrom: () => query }
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({
       enabled: true,
-      ceilingAmount: '50.00',
-      holdbackReleaseAmount: '12.00'
+      currency: 'CAD',
+      ceilingAmount: money('50.00', 'CAD'),
+      holdbackReleaseAmount: money('12.00', 'CAD')
     })
 
     await expect(guard({
@@ -319,7 +347,7 @@ describe('gcs automated payments create hooks', () => {
       paymentId: 'payment-1',
       changes: {
         egcs_fc_fundingagreementcommitment: 'commitment-2',
-        egcs_fc_paymentamount: '50.01'
+        egcs_fc_paymentamount: money('50.01', 'CAD')
       }
     })).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_AMOUNT_EXCEEDS_CEILING' })
     expect(savePaymentMetadataMock).not.toHaveBeenCalled()
@@ -329,8 +357,8 @@ describe('gcs automated payments create hooks', () => {
       periodStart: 1,
       periodEnd: 3,
       releaseHoldback: true,
-      holdbackReleaseAmount: '12.00',
-      submittedAmount: '50.01',
+      holdbackReleaseAmount: money('12.00', 'CAD'),
+      submittedAmount: money('50.01', 'CAD'),
       excludePaymentId: 'payment-1'
     }), { enabledPaymentTypes: ['advance'] }, financials, agencyConfig)
   })
@@ -340,11 +368,11 @@ describe('gcs automated payments create hooks', () => {
     const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as (context: Record<string, unknown>) => Promise<void>
     const db = { selectFrom: vi.fn(() => { throw new Error('Disabled automation must not read calculation sources') }) }
     await expect(guard({ operation: 'payment.update', agencyEnabled: false, agencyConfig: {},
-      db, agreementId: '1', paymentId: '1', changes: { egcs_fc_paymentamount: '50.00' } })).resolves.toBeUndefined()
+      db, agreementId: '1', paymentId: '1', changes: { egcs_fc_paymentamount: money('50.00', 'CAD') } })).resolves.toBeUndefined()
     expect(lockAutomatedPaymentAgreementMock).toHaveBeenCalledWith(db, '1')
     expect(db.selectFrom).not.toHaveBeenCalled()
     expect(getPaymentMetadataMock).toHaveBeenCalledWith(db, '1')
-    expect(savePaymentMetadataMock).toHaveBeenCalledWith(db, '1', { releaseHoldback: true, holdbackReleaseAmount: '12.00' })
+    expect(savePaymentMetadataMock).toHaveBeenCalledWith(db, '1', { releaseHoldback: true, holdbackReleaseAmount: money('12.00', 'CAD') })
     expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
   })
 
@@ -359,7 +387,7 @@ describe('gcs automated payments create hooks', () => {
     await loadHandler()
     const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as (context: Record<string, unknown>) => Promise<void>
     const responses = [{ egcs_fc_fiscalyear: '1', egcs_fc_paymenttype: 'advance', egcs_fc_periodstart: 0, egcs_fc_periodend: 2,
-      egcs_fc_paymentamount: '50.00', egcs_fc_currency: 'cad', egcs_fc_fundingagreementcommitment: '1' },
+      egcs_fc_paymentamount: money('50.00', 'CAD').amount, egcs_fc_currency: 'cad', egcs_fc_fundingagreementcommitment: '1' },
       { commitment_type: '2', stream_id: '1' }, { config: {} }]
     const query = new Proxy({}, { get: (_target, property) => property === 'executeTakeFirst' ? async () => responses.shift() : () => query })
     const db = { selectFrom: () => query }
@@ -404,9 +432,9 @@ describe('gcs automated payments create hooks', () => {
       db,
       agreementId: 'agreement-1',
       paymentId: 'payment-1',
-      changes: { egcs_fc_paymentamount: '50.00' }
+      changes: { egcs_fc_paymentamount: money('50.00', 'CAD') }
     })).resolves.toBeUndefined()
-    if (responses.length === 3) expect(savePaymentMetadataMock).toHaveBeenCalledWith(db, 'payment-1', { releaseHoldback: true, holdbackReleaseAmount: '12.00' })
+    if (responses.length === 3) expect(savePaymentMetadataMock).toHaveBeenCalledWith(db, 'payment-1', { releaseHoldback: true, holdbackReleaseAmount: money('12.00', 'CAD') })
     expect(lockAutomatedPaymentAgreementMock).toHaveBeenCalledWith(db, 'agreement-1')
     expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
   })
@@ -438,12 +466,12 @@ describe('gcs automated payments create hooks', () => {
     const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as
       (context: Record<string, unknown>) => Promise<void>
     const responses = [
-      {
+      { egcs_fc_currency: 'cad',
         egcs_fc_fiscalyear: 'fy-1',
         egcs_fc_paymenttype: 'advance',
         egcs_fc_periodstart: 1,
         egcs_fc_periodend: 3,
-        egcs_fc_paymentamount: '50.00',
+        egcs_fc_paymentamount: money('50.00', 'CAD').amount,
         egcs_fc_fundingagreementcommitment: 'commitment-1'
       },
       { commitment_type: 'type-1', stream_id: 'stream-1' },
@@ -457,8 +485,9 @@ describe('gcs automated payments create hooks', () => {
     const db = { selectFrom: () => query }
     calculateAutomatedPaymentFromDbMock.mockResolvedValueOnce({
       enabled: true,
-      ceilingAmount: '50.00',
-      holdbackReleaseAmount: '0.00'
+      currency: 'CAD',
+      ceilingAmount: money('50.00', 'CAD'),
+      holdbackReleaseAmount: money('0.00', 'CAD')
     })
 
     await expect(guard({
@@ -466,51 +495,60 @@ describe('gcs automated payments create hooks', () => {
       db,
       agreementId: 'agreement-1',
       paymentId: 'payment-1',
-      changes: { egcs_fc_paymentamount: '50.00' }
+      changes: { egcs_fc_paymentamount: money('50.00', 'CAD') }
     })).resolves.toBeUndefined()
     expect(savePaymentMetadataMock).toHaveBeenCalledWith(db, 'payment-1', expect.objectContaining({
-      releaseHoldback: true, holdbackReleaseAmount: '0.00',
-      calculationEvidence: expect.objectContaining({ version: 2, input: expect.objectContaining({ fiscalYearId: 'fy-1', periodStart: 1, periodEnd: 3 }),
-        calculation: expect.objectContaining({ ceilingAmount: '50.00' }) })
+      releaseHoldback: true, holdbackReleaseAmount: money('0.00', 'CAD'),
+      calculationEvidence: expect.objectContaining({ version: 3, input: expect.objectContaining({ fiscalYearId: 'fy-1', periodStart: 1, periodEnd: 3 }),
+        calculation: expect.objectContaining({ ceilingAmount: money('50.00', 'CAD') }) })
     }))
   })
 
   it('calculates USD creation and saves existing release metadata without replacing the native currency', async () => {
+    calculateAutomatedPaymentFromDbMock.mockResolvedValue({ enabled: true, currency: 'USD', ceilingAmount: money('100', 'USD'), holdbackReleaseAmount: money('8', 'USD') })
     const handler = await loadHandler()
-    const body = { ...validBody, egcs_fc_currency: 'usd' }
+    const body = { ...validBody, egcs_fc_currency: 'usd', egcs_fc_paymentamount: money('100', 'USD'), extensions: { 'gcs-automated-payments': { releaseHoldback: true, holdbackReleaseAmount: money('10', 'USD') } } }
     await handler({ phase: 'before-create', agencyConfig, validatedBody: body, trx: {}, agreementId: '1', config: {} })
     await handler({ phase: 'after-create', agencyConfig, validatedBody: body, createdRecord: { id: '1', egcs_fc_currency: 'usd' }, trx: {}, agreementId: '1', config: {} })
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({ currency: 'usd' }), {}, financials, agencyConfig)
     expect(calculateAutomatedPaymentFromDbMock).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({ currency: 'usd', excludePaymentId: '1' }), {}, financials, agencyConfig)
     expect(body.egcs_fc_currency).toBe('usd')
-    expect(savePaymentMetadataMock).toHaveBeenCalledWith(expect.anything(), '1', expect.objectContaining({ releaseHoldback: true, holdbackReleaseAmount: '8.00', calculationEvidence: expect.objectContaining({ input: expect.objectContaining({ currency: 'usd' }) }) }))
+    expect(savePaymentMetadataMock).toHaveBeenCalledWith(expect.anything(), '1', expect.objectContaining({ releaseHoldback: true, holdbackReleaseAmount: money('8.00', 'USD'), calculationEvidence: expect.objectContaining({ input: expect.objectContaining({ currency: 'usd' }) }) }))
   })
 
   it('rejects a created payment currency different from its validated request before saving metadata', async () => {
     const handler = await loadHandler()
-    await expect(handler({ phase: 'after-create', agencyConfig, validatedBody: { ...validBody, egcs_fc_currency: 'usd' },
+    await expect(handler({ phase: 'after-create', agencyConfig, validatedBody: { ...validBody, egcs_fc_currency: 'usd', egcs_fc_paymentamount: money('100', 'USD'), extensions: { 'gcs-automated-payments': { releaseHoldback: true, holdbackReleaseAmount: money('10', 'USD') } } },
       createdRecord: { id: '1', egcs_fc_currency: 'cad' }, trx: {}, agreementId: '1', config: {} }))
       .rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH', details: [expect.objectContaining({ path: 'egcs_fc_currency' })] })
     expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
     expect(savePaymentMetadataMock).not.toHaveBeenCalled()
   })
 
-  it.each([undefined, 'eur'])('recalculates updates in their saved or changed currency %j', async nextCurrency => {
+  it.each([undefined, 'eur'])('retains the saved currency and rejects currency changes %j', async nextCurrency => {
+    calculateAutomatedPaymentFromDbMock.mockResolvedValue({ enabled: true, currency: 'USD', ceilingAmount: money('100', 'USD'), holdbackReleaseAmount: money('12', 'USD') })
+    getPaymentMetadataMock.mockResolvedValue({ releaseHoldback: true, holdbackReleaseAmount: money('12', 'USD') })
     await loadHandler()
     const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as (context: Record<string, unknown>) => Promise<void>
     const responses = [{ egcs_fc_fiscalyear: '1', egcs_fc_paymenttype: 'advance', egcs_fc_periodstart: 0, egcs_fc_periodend: 0,
-      egcs_fc_paymentamount: '50.00', egcs_fc_currency: 'usd', egcs_fc_fundingagreementcommitment: '1' },
+      egcs_fc_paymentamount: money('50.00', 'USD').amount, egcs_fc_currency: 'usd', egcs_fc_fundingagreementcommitment: '1' },
       { commitment_type: '2', stream_id: '1' }, { config: {} }]
     const query = new Proxy({}, { get: (_target, property) => property === 'executeTakeFirst' ? async () => responses.shift() : () => query })
-    await guard({ operation: 'payment.update', agencyEnabled: true, agencyConfig, db: { selectFrom: () => query }, agreementId: '1', paymentId: '1',
+    const operation = guard({ operation: 'payment.update', agencyEnabled: true, agencyConfig, db: { selectFrom: () => query }, agreementId: '1', paymentId: '1',
       changes: nextCurrency ? { egcs_fc_currency: nextCurrency } : {} })
-    expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ currency: nextCurrency ?? 'usd', excludePaymentId: '1' }), {}, financials, agencyConfig)
+    if (nextCurrency) {
+      await expect(operation).rejects.toMatchObject({ code: 'GCS_AUTOMATED_PAYMENTS_CURRENCY_MISMATCH' })
+      expect(calculateAutomatedPaymentFromDbMock).not.toHaveBeenCalled()
+    } else {
+      await operation
+      expect(calculateAutomatedPaymentFromDbMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ currency: 'usd', excludePaymentId: '1' }), {}, financials, agencyConfig)
+    }
   })
   it('recalculates updates with their changed start month', async () => {
     await loadHandler()
     const guard = registerGcsExtensionAgreementPaymentMutationGuardMock.mock.calls[0]?.[1] as (context: Record<string, unknown>) => Promise<void>
     const responses = [{ egcs_fc_fiscalyear: '1', egcs_fc_paymenttype: 'advance', egcs_fc_periodstart: 0, egcs_fc_periodend: 5,
-      egcs_fc_paymentamount: '50.00', egcs_fc_currency: 'cad', egcs_fc_fundingagreementcommitment: '1' },
+      egcs_fc_paymentamount: money('50.00', 'CAD').amount, egcs_fc_currency: 'cad', egcs_fc_fundingagreementcommitment: '1' },
       { commitment_type: '2', stream_id: '1' }, { config: {} }]
     const query = new Proxy({}, { get: (_target, property) => property === 'executeTakeFirst' ? async () => responses.shift() : () => query })
     await guard({ operation: 'payment.update', agencyEnabled: true, agencyConfig, db: { selectFrom: () => query }, agreementId: '1', paymentId: '1',

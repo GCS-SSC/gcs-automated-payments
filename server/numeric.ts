@@ -1,18 +1,12 @@
 import { sql, type Expression, type RawBuilder } from 'kysely'
-import {
-  parseAutomatedPaymentAggregateMoney,
-  parseAutomatedPaymentMoney,
-  type AutomatedPaymentMoney
-} from '../shared/automated-payments.ts'
+import { isPersistableMoney, moneyFromMinorUnits, parseMinorUnits, type Money } from '@gcs-ssc/extensions/money'
 
 export const databaseNumericText = (expression: Expression<unknown>): RawBuilder<string> => sql<string>`CAST(${expression} AS text)`
-export const parseDatabaseMoney = (value: unknown): AutomatedPaymentMoney => {
+export const parseDatabaseMoney = (value: unknown, currency: string): Money => {
   if (typeof value !== 'string') throw new TypeError('Database money must be selected as text.')
-  return parseAutomatedPaymentMoney(value)
+  return moneyFromMinorUnits(parseMinorUnits(value), currency)
 }
-export const parseDatabaseAggregateMoney = (value: unknown): AutomatedPaymentMoney => {
-  if (typeof value !== 'string') throw new TypeError('Database aggregate money must be selected as text.')
-  return parseAutomatedPaymentAggregateMoney(value)
+export const databaseMoneyValue = (value: Money): RawBuilder<string> => {
+  if (!isPersistableMoney(value)) throw new RangeError('Money exceeds the persisted minor-unit range.')
+  return sql<string>`CAST(${value.amount} AS numeric)`
 }
-export const databaseMoneyValue = (value: AutomatedPaymentMoney): RawBuilder<string> =>
-  sql<string>`CAST(${value} AS numeric(19, 2))`

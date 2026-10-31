@@ -1,11 +1,11 @@
+import { parseMoney, zeroMoney } from '@gcs-ssc/extensions/money'
 import { sql, type Kysely } from 'kysely'
 import type { GcsExtensionAgreementFinancials } from '@gcs-ssc/extensions/server'
 import { isGcsExtensionUserError } from '@gcs-ssc/extensions/server'
 import {
-  EXTENSION_KEY, AutomatedPaymentCurrencySchema, ZERO_AUTOMATED_PAYMENT_MONEY,
+  EXTENSION_KEY, AutomatedPaymentCurrencySchema,
   AutomatedPaymentsAgencyConfigSchema,
   parseAutomatedPaymentExtensionPayload, parseAutomatedPaymentsStreamConfig,
-  parseAutomatedPaymentMoney,
   type AutomatedPaymentMoney, type AutomatedPaymentMoneyInput, type AutomatedPaymentCalculationResult, type AutomatedPaymentCreditMemoBasis
 } from '../shared/automated-payments.ts'
 import { AutomatedPaymentCalculationEvidenceSchema, type AutomatedPaymentCalculationEvidence } from '../shared/automated-payments.ts'
@@ -16,7 +16,7 @@ type Db = Kysely<Record<string, Record<string, unknown>>>
 const PAYMENT_METADATA_KEY = 'payment-metadata'
 
 export interface AutomatedPaymentServerInput {
-  currency?: string
+  currency: string
   agreementId: string
   commitmentType: string
   fiscalYearId: string
@@ -36,7 +36,7 @@ export const buildPaymentCalculationEvidence = (
   calculation: AutomatedPaymentServerCalculation,
   creditMemoBasis: AutomatedPaymentCreditMemoBasis
 ) => ({
-  version: 2,
+  version: 3,
   capturedAt: new Date().toISOString(),
   input: { fiscalYearId: input.fiscalYearId, commitmentTypeId: input.commitmentType,
     paymentType: input.paymentType, periodStart: input.periodStart, periodEnd: input.periodEnd,
@@ -94,7 +94,7 @@ export const savePaymentMetadata = async (
 export const getPaymentMetadata = async (
   db: Db,
   paymentId: string
-): Promise<{ releaseHoldback: boolean, holdbackReleaseAmount: AutomatedPaymentMoney }> => {
+): Promise<{ releaseHoldback: boolean, holdbackReleaseAmount?: AutomatedPaymentMoney }> => {
   const row = await db
     .selectFrom('extensions.kv_entry')
     .select('value')
@@ -107,7 +107,7 @@ export const getPaymentMetadata = async (
   const value = parseAutomatedPaymentExtensionPayload(row?.value)
   return {
     releaseHoldback: value.releaseHoldback,
-    holdbackReleaseAmount: value.holdbackReleaseAmount
+    ...(value.holdbackReleaseAmount ? { holdbackReleaseAmount: value.holdbackReleaseAmount } : {})
   }
 }
 
@@ -134,10 +134,11 @@ export const calculateAutomatedPaymentFromDb = async (
   agencyConfig: unknown
 ): Promise<AutomatedPaymentServerCalculation> => {
   const currency = AutomatedPaymentCurrencySchema.parse(input.currency)
+  const zero = zeroMoney(currency)
   if (!parseAutomatedPaymentsStreamConfig(streamConfig).enabledPaymentTypes.includes(input.paymentType)) {
-    return { enabled: false, baseAmount: ZERO_AUTOMATED_PAYMENT_MONEY, ceilingAmount: ZERO_AUTOMATED_PAYMENT_MONEY,
-      suggestedAmount: ZERO_AUTOMATED_PAYMENT_MONEY, holdbackAmount: ZERO_AUTOMATED_PAYMENT_MONEY,
-      holdbackReleaseAmount: ZERO_AUTOMATED_PAYMENT_MONEY, availableBeforeHoldback: ZERO_AUTOMATED_PAYMENT_MONEY,
+    return { enabled: false, baseAmount: zero, ceilingAmount: zero,
+      suggestedAmount: zero, holdbackAmount: zero,
+      holdbackReleaseAmount: zero, availableBeforeHoldback: zero,
       currency: currency.toUpperCase(), details: [] }
   }
   const settings = AutomatedPaymentsAgencyConfigSchema.safeParse(agencyConfig)
@@ -148,7 +149,7 @@ export const calculateAutomatedPaymentFromDb = async (
     currency, fiscalYearId: input.fiscalYearId, commitmentTypeId: input.commitmentType,
     paymentType: input.paymentType, periodStart: input.periodStart, periodEnd: input.periodEnd,
     releaseHoldback: input.releaseHoldback,
-    holdbackReleaseAmount: input.holdbackReleaseAmount === undefined ? undefined : parseAutomatedPaymentMoney(input.holdbackReleaseAmount),
+    holdbackReleaseAmount: input.holdbackReleaseAmount === undefined ? undefined : parseMoney(input.holdbackReleaseAmount),
     ...(input.excludePaymentId ? { excludePaymentId: input.excludePaymentId } : {})
   }).catch((error: unknown) => {
     if (isGcsExtensionUserError(error) && error.code === 'AGREEMENT_CURRENCY_MISMATCH') {
