@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch, type Ref } from 'vue'
+import { computed, watch } from 'vue'
+import { usePaymentRequest } from '../composables/usePaymentRequest'
 import type { Money } from '@gcs-ssc/extensions/money'
 import type { GcsPaymentEvidenceComponentProps } from '@gcs-ssc/extensions/ui'
 import { ExtensionButton, ExtensionSection, ExtensionPaymentCalculationBreakdown, useExtensionApi, useExtensionI18n } from '@gcs-ssc/extensions/ui'
@@ -10,13 +11,10 @@ import { messages } from '../i18n/messages'
 const { extensionKey, context } = defineProps<GcsPaymentEvidenceComponentProps>()
 const { t, locale } = useExtensionI18n(messages)
 const api = useExtensionApi(extensionKey)
-const evidence: Ref<AutomatedPaymentCalculationEvidence | null> = ref(null)
-const loading: Ref<boolean> = ref(false)
-const failed: Ref<boolean> = ref(false)
-let sequence = 0
-onBeforeUnmount(() => {
-  sequence += 1
-})
+const request = usePaymentRequest<AutomatedPaymentCalculationEvidence | null, true>()
+const evidence = request.data
+const loading = request.loading
+const failed = request.error
 
 const formatMoney = (value: Money): string => formatCalculationMoney(value, locale.value)
 const explanation = computed(() => formatCalculationExplanation(
@@ -29,21 +27,18 @@ const capturedAt = computed(() => evidence.value
 
 /** Reads retained evidence and rejects responses from a previously selected Payment. */
 const loadEvidence = async () => {
-  const current = ++sequence
-  evidence.value = null
-  failed.value = false
-  loading.value = true
+  const current = request.start()
+  if (!current) return
+  const ownerId = context.ownerId
   try {
-    const response = await api.get<{ evidence: unknown }>(`/payments/${context.ownerId}/calculation-evidence`)
-    if (current !== sequence) return
-    evidence.value = response.evidence === null ? null : AutomatedPaymentCalculationEvidenceSchema.parse(response.evidence)
+    const response = await api.get<{ evidence: unknown }>(`/payments/${ownerId}/calculation-evidence`)
+    if (!request.owns(current)) return
+    request.succeed(current, response.evidence === null ? null : AutomatedPaymentCalculationEvidenceSchema.parse(response.evidence))
   } catch {
-    if (current === sequence) failed.value = true
-  } finally {
-    if (current === sequence) loading.value = false
+    request.fail(current, true)
   }
 }
-watch(() => context.ownerId, loadEvidence, { immediate: true })
+watch(() => context.ownerId, loadEvidence, { immediate: true, flush: 'sync' })
 </script>
 
 <template>

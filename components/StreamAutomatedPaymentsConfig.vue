@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import { messages } from '../i18n/messages'
-import { computed, ref, watch } from 'vue'
-import type { Ref } from 'vue'
+import { computed } from 'vue'
 import type { GcsExtensionJsonConfig, GcsResolvedExtension } from '@gcs-ssc/extensions'
 import { ExtensionCheckbox, ExtensionFormField, useExtensionI18n } from '@gcs-ssc/extensions/ui'
 import {
   parseAutomatedPaymentsStreamConfig,
-  type AutomatedPaymentsStreamConfig,
   type AutomatedPaymentType
 } from '../shared/automated-payments'
 
@@ -20,22 +18,12 @@ defineProps<{
 const config = defineModel<GcsExtensionJsonConfig>({ required: true })
 const { t } = useExtensionI18n(messages)
 
-const localConfig: Ref<AutomatedPaymentsStreamConfig> = ref(parseAutomatedPaymentsStreamConfig(config.value))
+const localConfig = computed(() => parseAutomatedPaymentsStreamConfig(config.value))
 
-const paymentTypeOptions = computed(() => [
+const paymentTypeOptions = computed<Array<{ label: string; value: AutomatedPaymentType }>>(() => [
   { label: t('paymentType.reimbursement'), value: 'reimbursement' },
   { label: t('paymentType.advance'), value: 'advance' }
 ])
-
-watch(localConfig, value => {
-  config.value = {
-    enabledPaymentTypes: value.enabledPaymentTypes
-  }
-}, { deep: true })
-
-watch(config, value => {
-  localConfig.value = parseAutomatedPaymentsStreamConfig(value)
-})
 
 const updatePaymentType = (paymentType: AutomatedPaymentType, enabled: boolean) => {
   const current = new Set(localConfig.value.enabledPaymentTypes)
@@ -44,7 +32,7 @@ const updatePaymentType = (paymentType: AutomatedPaymentType, enabled: boolean) 
   } else {
     current.delete(paymentType)
   }
-  localConfig.value.enabledPaymentTypes = Array.from(current)
+  config.value = { enabledPaymentTypes: Array.from(current) }
 }
 </script>
 
@@ -66,9 +54,9 @@ const updatePaymentType = (paymentType: AutomatedPaymentType, enabled: boolean) 
             <ExtensionCheckbox
               v-for="option in paymentTypeOptions"
               :key="option.value"
-              :model-value="localConfig.enabledPaymentTypes.includes(option.value as AutomatedPaymentType)"
+              :model-value="localConfig.enabledPaymentTypes.includes(option.value)"
               :label="option.label"
-              @update:model-value="(value: boolean | 'indeterminate') => updatePaymentType(option.value as AutomatedPaymentType, value === true)" />
+              @update:model-value="(value: boolean | 'indeterminate') => updatePaymentType(option.value, value === true)" />
           </div>
         </ExtensionFormField>
       </div>

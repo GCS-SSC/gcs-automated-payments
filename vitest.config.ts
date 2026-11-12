@@ -4,6 +4,7 @@ import { defineConfig } from 'vitest/config'
 export const AUTOMATED_PAYMENTS_COVERAGE_INCLUDE = [
   'i18n/**/*.ts',
   'components/**/*.{ts,vue}',
+  'composables/**/*.ts',
   'extension.config.ts',
   'server/**/*.ts',
   'shared/**/*.ts'

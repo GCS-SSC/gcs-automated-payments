@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { formatCalculationExplanation, formatCalculationMoney } from '../shared/calculation-explanation'
 import { messages } from '../i18n/messages'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { usePaymentRequest } from '../composables/usePaymentRequest'
 import type { Ref } from 'vue'
 import { zeroMoney, type MoneyInput } from '@gcs-ssc/extensions/money'
 import { FetchResponseError, type GcsExtensionJsonConfig } from '@gcs-ssc/extensions'
@@ -42,11 +43,14 @@ const emit = defineEmits<{
 }>()
 
 const { locale, t } = useExtensionI18n(messages)
-const calculation: Ref<(AutomatedPaymentCalculationResult & { enabled?: boolean }) | null> = ref(null)
-const errorMessage: Ref<string | null> = ref(null)
-const localErrorKey: Ref<'calculation_error' | 'currency_mismatch' | null> = ref(null)
-const displayedError = computed(() => localErrorKey.value ? t(localErrorKey.value) : errorMessage.value)
-const isLoading: Ref<boolean> = ref(false)
+type CalculationError = { kind: 'local'; key: 'calculation_error' | 'currency_mismatch' } | { kind: 'api'; message: string }
+const request = usePaymentRequest<AutomatedPaymentCalculationResult & { enabled?: boolean }, CalculationError>()
+const calculation = request.data
+const isLoading = request.loading
+const displayedError = computed(() => {
+  const error = request.error.value
+  return error ? error.kind === 'local' ? t(error.key) : error.message : null
+})
 const releaseHoldback: Ref<boolean> = ref(false)
 const holdbackReleaseAmount: Ref<MoneyInput> = ref(undefined)
 
@@ -55,10 +59,6 @@ const endpoint = computed(() => `/agreements/${context.agreementId}/calculate-pa
 const selectedCurrency = computed(() => {
   const parsed = AutomatedPaymentCurrencySchema.safeParse(model.currency)
   return parsed.success ? parsed.data : null
-})
-let calculationSequence = 0
-onBeforeUnmount(() => {
-  calculationSequence += 1
 })
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -186,52 +186,47 @@ watch(locale, publishResult)
 
 /** Recalculates the payment ceiling from the current form values and publishes the result. */
 const calculate = async () => {
-  const sequence = ++calculationSequence
   const body = requestBody.value
-  calculation.value = null
-  errorMessage.value = null
-  localErrorKey.value = null
   emit('extensionPayload', {
     releaseHoldback: releaseHoldback.value,
     holdbackReleaseAmount: serializedHoldbackReleaseAmount.value
   })
 
   if (!hasRequiredInputs.value) {
-    calculation.value = null
-    errorMessage.value = null
-    isLoading.value = false
+    request.reset()
     publishResult()
     return
   }
 
-  isLoading.value = true
+  const current = request.start()
+  if (!current) return
+  const url = endpoint.value
   publishResult()
+  let settled = false
   try {
-    const result = await api.post<AutomatedPaymentCalculationResult>(endpoint.value, body)
-    if (sequence !== calculationSequence) return
+    const result = await api.post<AutomatedPaymentCalculationResult>(url, body)
+    if (!request.owns(current)) return
     if (result.currency.toLowerCase() !== body.egcs_fc_currency) {
-      localErrorKey.value = 'currency_mismatch'
-      return
-    }
-    calculation.value = result
-    errorMessage.value = null
-  } catch (error: unknown) {
-    if (sequence !== calculationSequence) return
-    calculation.value = null
-    if (error instanceof Response) {
-      const message = await readErrorMessage(error)
-      if (sequence !== calculationSequence) return
-      errorMessage.value = message
+      settled = request.fail(current, { kind: 'local', key: 'currency_mismatch' })
     } else {
-      errorMessage.value = error instanceof FetchResponseError
+      settled = request.succeed(current, result)
+    }
+  } catch (error: unknown) {
+    if (!request.owns(current)) return
+    let message: string | null
+    if (error instanceof Response) {
+      message = await readErrorMessage(error)
+      if (!request.owns(current)) return
+    } else {
+      message = error instanceof FetchResponseError
         && !(isRecord(error.data) && typeof error.data.text === 'string')
         ? resolveApiErrorMessage(error.data)
         : null
     }
-    if (!errorMessage.value) localErrorKey.value = 'calculation_error'
+    settled = request.fail(current, message ? { kind: 'api', message } : { kind: 'local', key: 'calculation_error' })
   } finally {
-    if (sequence === calculationSequence) {
-      isLoading.value = false
+    // A superseded or disposed request cannot publish into the next form context.
+    if (settled) {
       publishResult()
     }
   }
@@ -239,6 +234,7 @@ const calculate = async () => {
 
 // The host replaces its model object while typing. Compare only ceiling inputs,
 // so transient amount text never interrupts editing or resets the suggestion.
+watch([() => JSON.stringify(requestBody.value), endpoint], request.reset, { flush: 'sync' })
 watch([() => JSON.stringify(requestBody.value), endpoint], calculate, { immediate: true })
 </script>
 

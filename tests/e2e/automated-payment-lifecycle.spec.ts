@@ -199,10 +199,10 @@ const finalizeSourcePayment = async (page: Page, approver: Page, paymentId: stri
           ? (question.isResult ? question.options!.find(option => option.outcome === 'recommended')!.key : question.options![0]!.key)
           : 'Financial evidence verified for the shared capacity journey.'
       }))
-    const recommendationUrl = `/api/workflows/recommendation?entityType=fundingcasepayment&entityId=${paymentId}&purpose=approval_submission`
-    await expectOk(await page.request.put(recommendationUrl, { data: { revision: recommendation.egcs_cn_revision, responses } }), 'Save Payment recommendation')
+    const recommendationUrl = `/api/recommendations/${recommendation.id}`
+    await expectOk(await page.request.put(`${recommendationUrl}?submit=false`, { data: { revision: recommendation.egcs_cn_revision, responses } }), 'Save Payment recommendation')
     const refreshed = (await readRuntime()).recommendations.find(item => item.id === recommendation.id)!
-    await expectOk(await page.request.post(recommendationUrl.replace('/recommendation?', '/recommendation/submit?'), {
+    await expectOk(await page.request.put(`${recommendationUrl}?submit=true`, {
       data: { revision: refreshed.egcs_cn_revision, responses }
     }), 'Submit Payment recommendation')
     await approveAllSteps(page, 'commonrecommendation', recommendation.id)
