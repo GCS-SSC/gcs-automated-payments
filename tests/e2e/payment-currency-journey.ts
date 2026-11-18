@@ -137,7 +137,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
   const usdBudgetLine = await post(page, `${usdBase}/budget-line-items`, {
     egcs_fc_fundingagreementbudgetfiscalyear: usdFiscalYear.id, egcs_fc_organizationcostcategory: category.id,
     egcs_fc_costsubsection: 'Native USD payment audit', egcs_fc_description: 'Separate native currency limits',
-    egcs_fc_totalamount: parseCurrencyMoney('600.07', 'usd'), egcs_fc_programfunding: parseCurrencyMoney('600.07', 'usd'), egcs_fc_fundingsources: [], egcs_fc_currency: 'usd'
+    egcs_fc_totalamount: parseCurrencyMoney('600.07', 'usd'), egcs_fc_programfunding: parseCurrencyMoney('600.07', 'usd'), egcs_fc_currency: 'usd'
   })
   const approver = await browser.newPage()
   await helpers.login(approver, 'user03@example.com', 'password123')
@@ -208,7 +208,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       await reject(currency, 'agreement-budget-currency-mismatch', `${bases[currency]}/budget-line-items`, {
         egcs_fc_fundingagreementbudgetfiscalyear: years[currency].id, egcs_fc_organizationcostcategory: category.id,
         egcs_fc_costsubsection: 'Must reject mixed currency', egcs_fc_description: 'Wrong native denomination',
-        egcs_fc_totalamount: parseCurrencyMoney('0.01', opposite), egcs_fc_programfunding: parseCurrencyMoney('0.01', opposite), egcs_fc_fundingsources: [], egcs_fc_currency: opposite
+        egcs_fc_totalamount: parseCurrencyMoney('0.01', opposite), egcs_fc_programfunding: parseCurrencyMoney('0.01', opposite), egcs_fc_currency: opposite
       })
       record(currency, 'budget', currency === 'cad' ? budgetLine.id : usdBudgetLine.id, '', budgets[currency])
       const agreementBase = bases[currency]
@@ -541,7 +541,7 @@ export const runPaymentMinorUnitJourney = async (
   const budgetLine = await post(page, `${agreementBase}/budget-line-items`, {
     egcs_fc_fundingagreementbudgetfiscalyear: year.id, egcs_fc_organizationcostcategory: category.id,
     egcs_fc_costsubsection: `${currency.toUpperCase()} precision`, egcs_fc_description: 'Native smallest-unit Payment browser proof',
-    egcs_fc_totalamount: budget, egcs_fc_programfunding: budget, egcs_fc_fundingsources: [], egcs_fc_currency: currency
+    egcs_fc_totalamount: budget, egcs_fc_programfunding: budget, egcs_fc_currency: currency
   })
   const types = await read<{ items: Row[] }>(page, `${agreementBase}/commitments/lookups/types?limit=100`)
   const commitment = await post(page, `${agreementBase}/commitments`, {

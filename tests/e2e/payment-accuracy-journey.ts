@@ -298,7 +298,7 @@ export const preparePaymentAuditFixture = async (
   const budgetLine = await post(page, `${agreementBase}/budget-line-items`, {
     egcs_fc_fundingagreementbudgetfiscalyear: fiscalYear.id, egcs_fc_organizationcostcategory: category.id,
     egcs_fc_costsubsection: 'Independent payment audit', egcs_fc_description: 'Exact manual inputs',
-    egcs_fc_totalamount: parseCurrencyMoney('1000.05', 'cad'), egcs_fc_programfunding: parseCurrencyMoney('1000.05', 'cad'), egcs_fc_fundingsources: [], egcs_fc_currency: 'cad'
+    egcs_fc_totalamount: parseCurrencyMoney('1000.05', 'cad'), egcs_fc_programfunding: parseCurrencyMoney('1000.05', 'cad'), egcs_fc_currency: 'cad'
   })
   const updatedProgramBudget = await read<Row>(page, `/api/transfer-payments/${owner.programId}/budgets/${programBudget.id}`)
   const payee = await resolvePaymentAuditPayee(page, owner.agreementId, String(recipient.id))
