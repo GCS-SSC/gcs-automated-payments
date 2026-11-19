@@ -2,7 +2,7 @@ import { parseCurrencyMoney, parseMoney, majorMoneyText, type Money } from '@gcs
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, type Browser, type Page, type TestInfo } from '@playwright/test'
-import { preparePaymentAuditFixture, resolvePaymentAuditPayee, reviewPaymentAuditWizard, selectPaymentAuditPayee } from './payment-accuracy-journey'
+import { approvePaymentAuditAgreement, preparePaymentAuditFixture, resolvePaymentAuditPayee, reviewPaymentAuditWizard, selectPaymentAuditPayee } from './payment-accuracy-journey'
 import { createNativeAgreementThroughUi } from './agreement-native-create'
 
 type Currency = 'cad' | 'usd'
@@ -63,15 +63,14 @@ const verifyFundingCurrencyControls = async (page: Page, testInfo: TestInfo, own
     await expect(agreementControl).toHaveAttribute('aria-required', 'true')
     await expect(page.getByText(new RegExp(`${label}\\s*\\(${required}\\)`))).toBeVisible()
     await expect(agreementControl).toBeEnabled()
-    await expect(agreementControl).not.toHaveText(usdName)
-    await expect(agreementControl).not.toHaveText(new Intl.DisplayNames([locale], { type: 'currency' }).of('CAD')!)
+    await expect(agreementControl).toHaveText(new Intl.DisplayNames([locale], { type: 'currency' }).of('CAD')!)
     await agreementControl.focus()
     await agreementControl.press('Enter')
     await page.getByRole('option', { name: usdName, exact: true }).press('Enter')
     await expect(page.locator('[role="listbox"]')).toHaveCount(0)
     await expect(agreementControl).toHaveText(usdName)
     evidence.push({ kind: 'agreement-create', locale, label, visible_required_indicator: required,
-      aria_required: await agreementControl.getAttribute('aria-required'), initial_currency_blank: true,
+      aria_required: await agreementControl.getAttribute('aria-required'), initial_currency: 'cad',
       selected_currency: 'usd', selected_accessible_display: usdName, keyboard_selection: true, result: 'PASS' })
     await page.screenshot({ path: testInfo.outputPath(`currency-required-agreement-create-${locale}.png`), fullPage: true })
     for (const kind of ['chart', 'program-budget'] as const) {
@@ -145,6 +144,8 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
     await helpers.complete(page, entityType, id, 'Native currency financial evidence independently checked.')
     await helpers.approveAll(approver, entityType, id)
   }
+  await approvePaymentAuditAgreement(page, approver, owner.agreementId, helpers.approveAll)
+  await approvePaymentAuditAgreement(page, approver, usdAgreement.id, helpers.approveAll)
   const budgets: Record<Currency, string> = { cad: '1000.05', usd: '600.07' }
   const holdbacks: Record<Currency, string> = { cad: '100.00', usd: '60.00' }
   const currencyLabel = (currency: Currency) => new Intl.DisplayNames(['en'], { type: 'currency' }).of(currency.toUpperCase())!
@@ -241,8 +242,13 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       const lineDialog = page.getByRole('dialog', { name: 'Add Commitment Line', exact: true })
       await lineDialog.getByRole('spinbutton', { name: /^Line number/ }).fill('1')
       const codingResponse = await read<{ items: Row[] }>(page, `${agreementBase}/commitment-lines/lookups/chart-of-accounts?permission_action=update&commitmentId=${created.id}&currency=${currency}&limit=100`)
-      expect(codingResponse.items.map(row => row.id)).toEqual([currency === 'cad' ? linkedChart.id : usdLinkedChart.id])
-      await choose(lineDialog, /^Stream commitment/, new RegExp(String(codingResponse.items[0]!.label_en).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+      const codingAccountId = currency === 'cad' ? linkedChart.id : usdLinkedChart.id
+      expect(codingResponse.items.map(row => row.id)).toEqual([codingAccountId])
+      await lineDialog.getByRole('combobox', { name: /^Stream commitment/ }).click()
+      const codingOptions = page.getByRole('listbox').getByRole('option')
+      await expect(codingOptions).toHaveCount(1)
+      await codingOptions.first().click()
+      await expect(page.getByRole('listbox')).toHaveCount(0)
       const lineAmount = lineDialog.getByRole('textbox', { name: /^Amount/ })
       await lineAmount.click()
       await expect(lineAmount).toBeFocused()
@@ -253,6 +259,7 @@ export const runPaymentCurrencyJourney = async (page: Page, browser: Browser, te
       await lineDialog.getByRole('button', { name: 'Add', exact: true }).click()
       await expect(lineDialog).toBeHidden()
       const detail = await read<Row & { lines: Row[] }>(page, `${agreementBase}/commitments/${created.id}`)
+      expect(detail.lines).toMatchObject([{ egcs_fc_transferpaymentstreamchartofaccount: codingAccountId }])
       commitmentLines[currency] = detail.lines[0]!.id
       const wrongCoding = await page.request.post(`${agreementBase}/commitment-lines`, { headers: apiRequestHeaders, data: {
         egcs_fc_commitment: created.id, egcs_fc_commitmentlinenumber: 2,
@@ -558,6 +565,7 @@ export const runPaymentMinorUnitJourney = async (
     await helpers.approveAll(approver, entityType, id)
   }
   try {
+    await approvePaymentAuditAgreement(page, approver, native.created.id, helpers.approveAll)
     await complete('fundingcaseagreementcommitment', commitment.id)
     const forecast = await post(page, `${agreementBase}/forecasts`, { egcs_fc_fiscalyear: year.id })
     await post(page, `${agreementBase}/forecast-line-items`, {

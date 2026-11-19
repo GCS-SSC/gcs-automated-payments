@@ -245,6 +245,7 @@ export const preparePaymentAuditFixture = async (
   const denied = agencyStatuses.find(status => status.nameEn === 'Rejected')!
   const paid = agencyStatuses.find(status => status.nameEn === 'Paid' && status.terminal)!
   const successStatuses = {
+    fundingcaseagreement: agencyStatuses.find(status => status.nameEn === 'Active'),
     fundingcaseagreementcommitment: agencyStatuses.find(status => status.nameEn === 'Committed' && !status.terminal),
     fundingcaseagreementclaim: agencyStatuses.find(status => status.nameEn === 'Accepted' && !status.terminal),
     fundingclaimreconcile: agencyStatuses.find(status => status.nameEn === 'Reconciled' && status.terminal),
@@ -305,6 +306,17 @@ export const preparePaymentAuditFixture = async (
   return { owner, agreementBase, fiscalYear, fiscal, budgetLine, category, linkedChart, sourceBudget, sourceRows, streamBase, authoredStreamBudget, updatedProgramBudget, agreementInput, authoredFinalBasis, payee }
 }
 
+export const approvePaymentAuditAgreement = async (
+  page: Page, approver: Page, agreementId: string, approveAll: Helpers['approveAll']
+) => {
+  const entityType = 'fundingcaseagreement'
+  await post(page, '/api/workflows/start', { entityType, entityId: agreementId, purpose: 'approval_submission' })
+  await approveAll(approver, entityType, agreementId)
+  const runtime = await read<{ current: { runtimeState: string } }>(page,
+    `/api/workflows/runtime?entityType=${entityType}&entityId=${agreementId}&purpose=approval_submission`)
+  expect(['succeeded', 'approved']).toContain(runtime.current.runtimeState)
+}
+
 export const runPaymentAccuracyJourney = async (
   page: Page, browser: Browser, testInfo: TestInfo, source: Owner, helpers: Helpers
 ) => {
@@ -331,6 +343,7 @@ export const runPaymentAccuracyJourney = async (
     await helpers.complete(page, entityType, String(id), 'Amounts verified against independent payment-audit ledger.')
     await helpers.approveAll(approver, entityType, String(id))
   }
+  await approvePaymentAuditAgreement(page, approver, owner.agreementId, helpers.approveAll)
   await complete('fundingcaseagreementcommitment', commitment.id)
   const forecast = await post(page, `${agreementBase}/forecasts`, { egcs_fc_fiscalyear: fiscalYear.id })
   const forecasts = ['300.01', '300.02', '400.02']

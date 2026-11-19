@@ -2,7 +2,7 @@ import { parseCurrencyMoney, parseMoney, majorMoneyText, type Money } from '@gcs
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, type Browser, type Page, type TestInfo } from '@playwright/test'
-import { preparePaymentAuditFixture, reviewPaymentAuditWizard, selectPaymentAuditPayee } from './payment-accuracy-journey'
+import { approvePaymentAuditAgreement, preparePaymentAuditFixture, reviewPaymentAuditWizard, selectPaymentAuditPayee } from './payment-accuracy-journey'
 
 type Row = { id: string } & Record<string, unknown>
 type Owner = { agencyId: string; programId: string; streamId: string; agreementId: string }
@@ -65,6 +65,7 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
     await helpers.approveAll(approver, entityType, id)
   }
   try {
+    await approvePaymentAuditAgreement(page, approver, owner.agreementId, helpers.approveAll)
     await complete('fundingcaseagreementcommitment', commitment.id)
     const forecast = await post(page, `${agreementBase}/forecasts`, { egcs_fc_fiscalyear: fiscalYear.id })
     const forecastLine = await post(page, `${agreementBase}/forecast-line-items`, {
@@ -116,7 +117,9 @@ export const runPaymentEmptyFinalFiscalYearJourney = async (page: Page, browser:
     await reviewPaymentAuditWizard(page, dialog, owner.agreementId)
     const paymentResponse = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith(`${agreementBase}/payments`))
     await dialog.getByRole('button', { name: 'Add', exact: true }).click()
-    const payment = await (await paymentResponse).json() as Row
+    const response = await paymentResponse
+    expect(response.ok(), await response.text()).toBe(true)
+    const payment = await response.json() as Row
     expect(payment.egcs_fc_currency).toBe('cad')
     expect(payment.egcs_fc_paymentamount).toEqual(parseCurrencyMoney('1000.05', 'cad'))
     expect(payment.egcs_fc_applicantrecipient).toBe(fixture.payee.id)

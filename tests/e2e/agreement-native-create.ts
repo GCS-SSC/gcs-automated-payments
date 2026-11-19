@@ -24,24 +24,21 @@ const getItems = async (page: Page, path: string) => {
 }
 
 const setDate = async (page: Page, index: number, value: string) => {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)!
-  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
-  const month = date.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' })
-  const year = date.getUTCFullYear()
-  await page.getByRole('group').nth(index).click()
-  const calendar = page.locator('[data-slot="content"]').last()
-  for (let attempt = 0; attempt < 36; attempt++) {
-    if (await calendar.getByText(new RegExp(`^${month}\\s+${year}$`, 'i')).count()) break
-    const heading = calendar.locator('h2, [data-slot="heading"], [aria-live="polite"]').filter({ hasText: /\d{4}/ }).first()
-    const parts = /^([A-Za-z]+)\s+(\d{4})$/.exec((await heading.innerText()).trim())
-    expect(parts, 'Calendar month heading').toBeTruthy()
-    const visible = new Date(`${parts![1]} 1, ${parts![2]}`)
-    const difference = (year - visible.getFullYear()) * 12 + date.getUTCMonth() - visible.getMonth()
-    await calendar.getByRole('button', { name: difference > 0 ? /next month/i : /previous month/i }).click()
+  const [year, month, day] = value.split('-')
+  if (!year || !month || !day) throw new Error(`Expected an ISO date, received ${value}`)
+
+  const fields = [
+    [page.getByRole('spinbutton', { name: /year/i }).nth(index), year],
+    [page.getByRole('spinbutton', { name: /month/i }).nth(index), month],
+    [page.getByRole('spinbutton', { name: /day/i }).nth(index), day]
+  ] as const
+  for (const [field, part] of fields) {
+    await field.click()
+    await field.press('Backspace')
+    await field.pressSequentially(part)
   }
-  await page.getByRole('button', { name: date.toLocaleDateString('en-US', {
-    day: 'numeric', month: 'long', weekday: 'long', year: 'numeric', timeZone: 'UTC'
-  }), exact: true }).click()
+  await fields[2][0].press('Tab')
+  for (const [field, part] of fields) await expect(field).toHaveText(part)
 }
 
 /** Saves the native Agreement through every real create control and verifies the persisted immutable field after reload. */
@@ -107,7 +104,7 @@ export const createNativeAgreementThroughUi = async (page: Page, testInfo: TestI
   await page.waitForURL(url => url.searchParams.get('section') === 'general')
   await expect(page.getByRole('combobox', { name: /^Currency/ })).toBeDisabled()
   await expect(page.getByRole('combobox', { name: /^Currency/ })).toHaveText(currencyDisplay)
-  const persisted = await page.request.get(`/api/agreements/${created.id}`)
+  const persisted = await page.request.get(`/api/agreements/${created.id}`, { maxRetries: 2 })
   expect(persisted.ok()).toBe(true)
   const profile = await persisted.json() as Row
   expect(profile.egcs_fc_currency).toBe(input.egcs_fc_currency)
