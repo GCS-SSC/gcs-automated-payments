@@ -1242,7 +1242,7 @@ test.describe.serial('Automated payment lifecycle', () => {
 
     const customBasisResponse = await page.request.post(`/api/agency/${target.agencyId}/holdback-bases`, {
       data: {
-        egcs_ay_languageindependentcode: 'automated-payments-custom-finalfiscal',
+        egcs_ay_languageindependentcode: 'automated_payments_custom_finalfiscal',
         egcs_ay_holdbackbasis: 'finalfiscal',
         egcs_ay_name_en: 'Automated payments final fiscal year',
         egcs_ay_name_fr: 'Dernier exercice des paiements automatises'
@@ -1253,7 +1253,7 @@ test.describe.serial('Automated payment lifecycle', () => {
       egcs_ay_languageindependentcode: string
       egcs_ay_holdbackbasis: string
     }>(customBasisResponse)
-    expect(customBasis.egcs_ay_languageindependentcode).toBe('automated-payments-custom-finalfiscal')
+    expect(customBasis.egcs_ay_languageindependentcode).toBe('automated_payments_custom_finalfiscal')
     expect(customBasis.egcs_ay_holdbackbasis).toBe('finalfiscal')
 
     const customStreamBasisResponse = await page.request.post(
