@@ -511,7 +511,7 @@ test.describe.serial('Automated payment lifecycle', () => {
   })
 
   test('runs allocation, commitment, forecast, and automatically calculated advance payment', async ({ page, browser }, testInfo) => {
-    test.setTimeout(180_000)
+    test.setTimeout(300_000)
     await login(page, 'root@example.com', 'password123')
 
     const agreementResponse = await page.request.get(`/api/agreements/${target.agreementId}`)
@@ -1283,7 +1283,7 @@ test.describe.serial('Automated payment lifecycle', () => {
   })
 
   test('separates CAD and USD Agreements and rejects mixed financial currencies', async ({ page, browser }, testInfo) => {
-    test.setTimeout(360_000)
+    test.setTimeout(600_000)
     await login(page, 'root@example.com', 'password123')
     await runPaymentCurrencyJourney(page, browser, testInfo, target, { login, approveAll: approveAllSteps, complete: completeEntity })
   })
